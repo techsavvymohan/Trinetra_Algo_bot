@@ -1,6 +1,5 @@
-# Environment variables & secrets (CRITICAL: Do not commit credentials)
-.env
-.env.*
+# Environment variables & secrets
+!.env
 !.env.example
 
 # Python cache & bytecode

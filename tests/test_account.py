@@ -12,6 +12,7 @@ class MockTick:
 
 
 class MockInfo:
+    login = 134289849
     balance = 100000.0
     equity = 100500.0
     margin = 1000.0
@@ -41,6 +42,7 @@ def test_account_refresh():
     am = AccountManager(conn)
     info = am.refresh()
     assert info is not None
+    assert info.login == 134289849
     assert info.balance == 100000.0
     assert info.equity == 100500.0
     assert info.currency == "USD"
@@ -90,12 +92,12 @@ def test_point_value_fallback():
     assert am.point_value() == 1.0
 
 
-def test_eur_point_size_fallback():
+def test_nas_point_size_fallback():
     conn = _make_connector()
     am = AccountManager(conn)
     assert am.point_size("XAUUSD") == 0.01
     conn.symbol_info.return_value = None
-    assert am.point_size("EURUSD") == 0.00001
+    assert am.point_size("USTECH100M") == 0.1
 
 
 def test_contract_size():
@@ -132,4 +134,4 @@ def test_point_size_fallback():
     conn = _make_connector()
     conn.symbol_info.return_value = None
     am = AccountManager(conn)
-    assert am.point_size() == 0.0001
+    assert am.point_size() == 0.01

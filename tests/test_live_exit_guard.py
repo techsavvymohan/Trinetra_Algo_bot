@@ -46,29 +46,29 @@ def test_fvg_scalp_not_killed_by_opposite_psar():
     tm, oe = _make_tm()
     _utc = lambda: datetime.now(timezone.utc).replace(tzinfo=None)
 
-    # SELL setup on Gold/EUR: swept buy-side liquidity, so previous trend was strongly bullish
-    cluster = PyraCluster(direction=TradeDirection.SELL, symbol="EURUSD")
-    cluster.fvg_low = 1.14850
-    cluster.fvg_high = 1.14865
-    cluster.highest_price = 1.14861
-    cluster.lowest_price = 1.14861
-    cluster.collective_sl = 1.14895
+    # SELL setup on Nasdaq/USTECH100M: swept buy-side liquidity, so previous trend was strongly bullish
+    cluster = PyraCluster(direction=TradeDirection.SELL, symbol="USTECH100M")
+    cluster.fvg_low = 20500.0
+    cluster.fvg_high = 20510.0
+    cluster.highest_price = 20508.0
+    cluster.lowest_price = 20508.0
+    cluster.collective_sl = 20525.0
     cluster.open_time = _utc()  # freshly opened trade (0 seconds old)
 
     leg = TradeLeg(
         position_ticket=5001,
         direction=TradeDirection.SELL,
-        entry_price=1.14861,
+        entry_price=20508.0,
         lot_size=1.0,
-        sl_price=1.14895,
-        tp_price=1.14808,
+        sl_price=20525.0,
+        tp_price=20480.0,
         open_time=_utc(),
         status=TradeStatus.OPEN,
     )
     cluster.legs.append(leg)
 
     # Bullish M5 & M1 bars (representing recent run-up before reversal)
-    bullish_prices = [1.14700 + i * 0.00010 for i in range(30)]
+    bullish_prices = [20450.0 + i * 2.0 for i in range(30)]
     data_all = {
         "M1": make_tfdata("M1", bullish_prices),
         "M5": make_tfdata("M5", bullish_prices),

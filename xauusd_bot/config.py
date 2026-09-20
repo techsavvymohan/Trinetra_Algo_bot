@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 try:
+    # pyrefly: ignore [missing-import]
     from dotenv import load_dotenv
 except ImportError:
     def load_dotenv(): pass
@@ -33,7 +34,7 @@ class MT5Config:
     password: str = ""
     server: str = ""
     path: str = r"C:\Program Files\MetaTrader 5\terminal64.exe"
-    timeout_ms: int = 5000
+    timeout_ms: int = 20000
 
     @classmethod
     def from_env(cls) -> "MT5Config":
@@ -45,14 +46,14 @@ class MT5Config:
             password=pwd,
             server=os.getenv("MT5_SERVER", ""),
             path=os.getenv("MT5_PATH", cls.path),
-            timeout_ms=_env_int("MT5_TIMEOUT_MS", 5000),
+            timeout_ms=_env_int("MT5_TIMEOUT_MS", 20000),
         )
 
 
 @dataclass
 class TradingConfig:
     symbol: str = "XAUUSD"
-    symbols: List[str] = field(default_factory=lambda: ["XAUUSD", "EURUSD"])
+    symbols: List[str] = field(default_factory=lambda: ["XAUUSD", "USTECH100M"])
     magic_number: int = 20260601
     comment: str = "XAUUSD_Digger"
 
@@ -82,8 +83,40 @@ class TradingConfig:
     pyramid_add_trigger_r: float = 0.5
     pyramid_initial_risk_pct: float = 0.85
 
-    partial_take_profit_r: float = 1.5
-    partial_close_pct: float = 50.0
+    partial_take_profit_r: float = 1.0
+    partial_close_pct: float = 25.0
+    partial_tp_tranche1_r: float = 1.0
+    partial_tp_tranche1_pct: float = 25.0
+    partial_tp_tranche2_r: float = 2.2
+    partial_tp_tranche2_pct: float = 35.0
+
+    # Dynamic Conviction-Weighted Bet Sizing (Institutional Kelly Factor)
+    enable_conviction_sizing: bool = True
+    conviction_scale_a_plus: float = 2.60
+    conviction_scale_a: float = 1.00
+    conviction_scale_b: float = 1.00
+    conviction_scale_c: float = 0.60
+
+    # Grade A+ (Unicorn) Criteria Configuration
+    xau_a_plus_ny_core_only: bool = True       # Grade A+ requires NY Core session (13:00 - 15:00 UTC)
+    xau_a_plus_block_h1_bullish: bool = True   # Filter out H1 bullish fatigue traps from A+
+    xau_a_plus_min_sl_dist: float = 0.0        # Optional minimum SL distance for A+
+
+    # Tuesday Compression Microstructure Guard (Blueprint Chapter 5.1)
+    tuesday_reduced_risk: bool = True
+    tuesday_risk_scale: float = 0.43
+    tuesday_breakeven_trigger_r: float = 1.40
+
+    # Universal Capital Adapter & Whale Iceberg Slicing
+    enable_universal_capital_adapter: bool = True
+    is_cent_account: bool = False
+    whale_slice_threshold_lots: float = 10.0
+    whale_max_child_slice_lots: float = 5.0
+
+    # Level-2 (L2) Depth of Market & Order Book Imbalance (OBI)
+    enable_l2_depth: bool = True
+    l2_depth_levels: int = 10
+    l2_min_obi_threshold: float = 0.15
 
     time_based_exit_minutes: int = 240
     max_r_multiple: float = 3.0
@@ -131,18 +164,18 @@ class TradingConfig:
     xau_atr_period: int = 14
     xau_displacement_atr_mult: float = 0.60
     xau_displacement_body_ratio: float = 0.60
-    xau_fvg_expiry_bars: int = 5
     xau_max_holding_bars: int = 0  # 0 = disabled for Gold runners (full 2.0R TP target)
     xau_require_retest: bool = True  # Confirmed rejection bounce required before filling FVG order
     xau_retest_max_bars: int = 8  # Maximum M1 bars to wait for confirmed retest
     xau_strict_killzones: bool = True  # London (07-09 UTC) & NY Core (13:30-16:30 UTC)
+    xau_session_cutoff_hour: int = 24  # Cutoff hour (UTC) for XAU signals (24 = disabled / Full-Day Flagship; 13 = London only)
     xau_target_r: float = 2.0
     xau_risk_per_trade: float = 0.0085
     xau_max_trades_per_session: int = 2  # Option A: 2 trades per session
     max_daily_trades: int = 4            # Option A: up to 4 trades per day across portfolio
     max_concurrent_pending_orders: int = 2 # Option A: allow up to 2 concurrent pending limit orders
     xau_fvg_expiry_bars: int = 8         # Option A: 8 M1 bars limit order patience for Gold
-    eur_fvg_expiry_bars: int = 12        # Option A: 12 M1 bars limit order patience for EUR/USD
+    nas_fvg_expiry_bars: int = 15        # 15 M1 bars limit order patience for Nasdaq 100 (antifragile retest window)
     xau_cooldown_minutes: int = 5
     xau_swing_lookback_m15: int = 20
     xau_mss_lookback_m1: int = 5
@@ -155,132 +188,241 @@ class TradingConfig:
     xau_early_invalidation_exit: bool = False
     xau_enable_pre_fill_guard: bool = True
     xau_breakeven_ratchet_enabled: bool = True
-    xau_breakeven_trigger_r: float = 1.75
-    xau_breakeven_buffer_r: float = 0.05
-    xau_stagnation_exit_enabled: bool = False
-    xau_stagnation_bars: int = 15
-    xau_stagnation_min_r: float = 0.40
+    xau_breakeven_trigger_r: float = 1.50
+    xau_breakeven_buffer_r: float = 0.10
+    xau_stagnation_exit_enabled: bool = True
+    xau_stagnation_bars: int = 20
+    xau_stagnation_min_r: float = 0.30
     xau_partial_close_enabled: bool = False
     xau_london_displacement_atr_mult: float = 0.75
     xau_london_displacement_body_ratio: float = 0.65
     xau_london_risk_per_trade: float = 0.0085
     xau_overlap_risk_per_trade: float = 0.0065
 
-    eur_target_r: float = 1.6
-    eur_breakeven_trigger_r: float = 1.2
-    eur_max_holding_bars: int = 180
-    eur_session_start_hour: int = 7   # 07:00 UTC (London Open)
-    eur_session_end_hour: int = 16    # 16:00 UTC (NY Overlap close - cuts off-hours drift/rollover)
-    eur_filter_lunch_chop: bool = True # Filter 10:00-12:00 UTC European lunch dead zone
-    eur_lunch_start_hour: int = 10
-    eur_lunch_end_hour: int = 12
-    eur_require_retest: bool = True
-    eur_retest_max_bars: int = 8
+    # Nasdaq 100 (USTECH100M / NAS100) Dedicated Parameters (Antifragile Plateau)
+    nas_risk_per_trade: float = 0.025
+    nas_target_r: float = 2.0
+    nas_breakeven_trigger_r: float = 1.25  # Centered on 1.20R - 1.30R robust plateau
+    nas_breakeven_buffer_r: float = 0.10
+    nas_max_holding_bars: int = 0
+    nas_session_start_hour: int = 15   # 15:45 UTC (US Afternoon Continuation Killzone)
+    nas_session_start_minute: int = 45
+    nas_killzone_morning_start_min: int = 45
+    nas_london_close_pause_start_hour: int = 24  # No pause needed after 15:45
+    nas_london_close_pause_end_min: int = 45
+    nas_session_end_hour: int = 20    # 20:00 UTC (US Cash Close)
+    nas_require_retest: bool = True
+    nas_retest_max_bars: int = 15     # 15 M1 bars limit order patience for Nasdaq
+    nas_require_h1_trend: bool = True
+    nas_stagnation_bars: int = 40     # Centered on 35 - 45 bar plateau
+    nas_max_consecutive_losses_day: int = 2  # Circuit breaker against FOMC/whipsaw days
+    conviction_scale_nas_a_plus: float = 2.40
     xau_min_sl_distance: float = 5.0  # Minimum $5.00 SL breathing room floor for Gold
-    eur_min_sl_distance: float = 0.0  # 0.0 = structural for Forex
+    nas_min_sl_distance: float = 10.0  # Minimum 10.0 pts SL breathing room floor for Nasdaq 100
+
 
     # ── El Professor Hidden Guards ──────────────────────────────────────────────
-    # Guard 1 (XAU only): London Close Wall — no new entries after 15:45 UTC
-    # Backtested: Win% 41.5%→46.3%, PF 1.54→1.74, blocks 42 low-quality entries
+    # Guard 1 (XAU only): London Close / NY Cutoff — no new entries after 14:45 UTC
+    # Backtested: Filters out late-day low-liquidity chop and false breakouts
     xau_london_close_guard: bool = True
-    xau_london_close_cutoff_hour: int = 15
+    xau_london_close_cutoff_hour: int = 14
     xau_london_close_cutoff_min: int = 45
-
-    # Guard 2 (EUR only): ATR Flash-Crash Circuit Breaker
-    # Backtested: +$112 PnL boost, blocks 6 spike entries, neutral-to-positive
-    eur_atr_circuit_breaker: bool = True
-    eur_atr_spike_lookback: int = 20
-    eur_atr_spike_mult: float = 3.0
-
-    # Guard 3 (EUR only): H4 Macro Bias Alignment — block counter-H4-trend entries
-    # Backtested: Win% 55.4%→63.2%, PF 1.56→2.98 (combined with G4)
-    eur_h4_bias_guard: bool = True
-    eur_h4_ema_fast: int = 9
-    eur_h4_ema_slow: int = 50
-
-    # Guard 4 (EUR only): 3-Consecutive-Loss Cooldown — 2-hour pause after 3 SLs
-    # Backtested: neutral standalone, +quality boost inside professor suite
-    eur_consec_loss_guard: bool = True
-    eur_consec_loss_max: int = 3
-    eur_consec_loss_pause_hours: int = 2
+    xau_london_start_hour: int = 8
+    xau_london_start_minute: int = 0
+    xau_friday_trade_enabled: bool = True   # Enabled for NY session (with London NFP skip)
+    xau_friday_skip_london: bool = True     # Skip 07:45 - 09:30 UTC on Friday (NFP / pre-weekend wicks)
+    xau_friday_risk_scale: float = 0.50     # Half-risk sizing on Friday afternoon
+    friday_skip_ny_session: bool = False    # Allow Friday NY session until 14:45 UTC
 
     enable_profit_compounding: bool = True
     initial_account_balance: float = 10000.0
-    compounding_cap_mult: float = 2.0
+    compounding_cap_mult: float = 5.0
     enable_net_beta_gate: bool = True
     correlated_usd_risk_scale: float = 0.60
 
     # ── Dynamic Profit Maximization Engine ───────────────────────────────────────
     delta_absorption_mode: str = "soft"  # "soft" (additive scoring / telemetry) or "hard" (strict setup veto)
-    enable_split_tranche_runner: bool = True
+    enable_split_tranche_runner: bool = False  # Full 2.0R runner with 1.0R BE protection
     runner_tranche_pct: float = 0.50
-    runner_trail_atr_mult: float = 2.0
+    runner_trail_atr_mult: float = 3.0
     fvg_adaptive_retest_tolerance_pct: float = 0.25
     enable_fvg_pyramiding: bool = True
 
     # ── XAU Dynamic Breakeven & Multi-Order Risk Engine ──────────────────────────
     xau_breakeven_enabled: bool = True
-    xau_breakeven_r: float = 1.25
-    xau_breakeven_buffer: float = 0.30
+    xau_breakeven_r: float = 1.00  # Move to BE at 1.0R profit for early risk-free status
+    xau_breakeven_buffer: float = 0.10
     xau_prevent_duplicate_pending: bool = True
     xau_h4_bias_guard: bool = False
     xau_h4_ema_fast: int = 9
     xau_h4_ema_slow: int = 50
+    friday_weekend_guard: bool = True
+    friday_close_cutoff_hour: int = 20
+    friday_close_cutoff_min: int = 45
 
-    def is_in_eur_session(self, current_time) -> bool:
-        """Evaluate whether current UTC time is within EURUSD active institutional session."""
+    # Day-of-Week Risk & Session Optimizations
+    friday_skip_ny_session: bool = True
+    tuesday_reduced_risk: bool = True
+    tuesday_risk_scale: float = 0.43
+    tuesday_trade_enabled: bool = True
+
+    # Guard 5 (XAU): Intra-Session Consecutive-Loss Cooldown
+    # After xau_consec_loss_max consecutive SL hits in the same day,
+    # pause XAU entries for the rest of that trading day.
+    # Guard 5b: after 1 SL hit during London session (07:45-10:30 UTC),
+    # block further London entries that day (NY unaffected).
+    xau_consec_loss_guard: bool = True
+    xau_consec_loss_max: int = 2   # pause entire day after 2 consecutive SL hits
+
+    # Guard 5 (NAS): Intra-Session Consecutive-Loss Cooldown for Nasdaq 100
+    # After nas_consec_loss_max consecutive SL hits, pause NAS entries for rest of day.
+    nas_consec_loss_guard: bool = True
+    nas_consec_loss_max: int = 2   # pause entire day after 2 consecutive NAS100 SL hits
+
+    # London Session Structural Optimization & Profit Protection
+    xau_london_require_h1_trend: bool = True
+    xau_london_protect_profits: bool = True
+
+
+    def is_in_nas_session(self, current_time) -> bool:
+        """Evaluate whether current UTC time is within Nasdaq 100 active US cash session.
+        Focuses on pristine US afternoon continuation (15:45 - 20:00 UTC).
+        """
         if current_time is None:
             return True
         h_utc = current_time.hour if hasattr(current_time, "hour") else 0
-        in_main = (self.eur_session_start_hour <= h_utc < self.eur_session_end_hour)
-        if not in_main:
+        m_utc = current_time.minute if hasattr(current_time, "minute") else 0
+        start_h = getattr(self, "nas_session_start_hour", 15)
+        start_m = getattr(self, "nas_killzone_morning_start_min", 45)
+        end_h = getattr(self, "nas_session_end_hour", 20)
+        if h_utc < start_h or h_utc >= end_h:
             return False
-        if self.eur_filter_lunch_chop:
-            if self.eur_lunch_start_hour <= h_utc < self.eur_lunch_end_hour:
-                return False
+        if h_utc == start_h and m_utc < start_m:
+            return False
         return True
 
+    def get_risk_per_trade(self, symbol: str = "XAUUSD") -> float:
+        from .utils.asset_specs import get_asset_spec
+        spec = get_asset_spec(symbol)
+        if spec["is_index"]:
+            return getattr(self, "nas_risk_per_trade", 0.025)
+        return getattr(self, "xau_risk_per_trade", getattr(self, "pyramid_initial_risk_pct", 3.5) / 100.0)
+
+    def get_conviction_scale(self, signal_or_grade, is_tuesday: bool = False, is_friday: bool = False) -> float:
+        """Calculate dynamic bet sizing factor (Fractional Kelly) without dropping trades."""
+        if not getattr(self, "enable_conviction_sizing", True):
+            scale = 1.0
+        else:
+            from .models import SignalGrade
+            sym = getattr(signal_or_grade, "symbol", "XAUUSD")
+            from .utils.asset_specs import get_asset_spec
+            spec = get_asset_spec(sym)
+
+            if hasattr(signal_or_grade, "grade"):
+                grade = signal_or_grade.grade
+            elif isinstance(signal_or_grade, SignalGrade):
+                grade = signal_or_grade
+            elif isinstance(signal_or_grade, int):
+                grade = SignalGrade.A if signal_or_grade >= self.signal_score_a_min else (
+                    SignalGrade.B if signal_or_grade >= self.signal_score_b_min else SignalGrade.C
+                )
+            else:
+                grade = SignalGrade.B
+
+            if spec["is_index"]:
+                if grade == SignalGrade.A_PLUS:
+                    scale = getattr(self, "conviction_scale_nas_a_plus", 2.40)
+                elif grade == SignalGrade.A:
+                    scale = getattr(self, "conviction_scale_a", 1.00)
+                elif grade == SignalGrade.B:
+                    scale = getattr(self, "conviction_scale_b", 1.00)
+                else:
+                    scale = getattr(self, "conviction_scale_c", 0.60)
+            else:
+                if grade == SignalGrade.A_PLUS:
+                    scale = getattr(self, "conviction_scale_a_plus", 2.60)
+                elif grade == SignalGrade.A:
+                    scale = getattr(self, "conviction_scale_a", 1.00)
+                elif grade == SignalGrade.B:
+                    scale = getattr(self, "conviction_scale_b", 1.00)
+                else:
+                    scale = getattr(self, "conviction_scale_c", 0.60)
+
+        if is_tuesday:
+            scale *= getattr(self, "tuesday_risk_scale", 0.43)
+        if is_friday and not spec.get("is_index", False):
+            scale *= getattr(self, "xau_friday_risk_scale", 0.50)
+        return scale
+
     def get_target_r(self, symbol: str = "XAUUSD") -> float:
-        if symbol and "EUR" in symbol.upper():
-            return self.eur_target_r
+        from .utils.asset_specs import get_asset_spec
+        spec = get_asset_spec(symbol)
+        if spec["is_index"]:
+            return getattr(self, "nas_target_r", 2.0)
         return self.xau_target_r
 
     def get_breakeven_trigger_r(self, symbol: str = "XAUUSD") -> float:
-        if symbol and "EUR" in symbol.upper():
-            return getattr(self, "eur_breakeven_trigger_r", 1.2)
-        return self.xau_breakeven_trigger_r
+        from .utils.asset_specs import get_asset_spec
+        spec = get_asset_spec(symbol)
+        if spec["is_index"]:
+            return getattr(self, "nas_breakeven_trigger_r", 1.25)
+        return getattr(self, "xau_breakeven_trigger_r", 1.50)
+
+    def get_breakeven_buffer_r(self, symbol: str = "XAUUSD") -> float:
+        from .utils.asset_specs import get_asset_spec
+        spec = get_asset_spec(symbol)
+        if spec["is_index"]:
+            return getattr(self, "nas_breakeven_buffer_r", 0.10)
+        return getattr(self, "xau_breakeven_buffer_r", 0.10)
 
     def get_max_holding_bars(self, symbol: str = "XAUUSD") -> int:
-        if symbol and "EUR" in symbol.upper():
-            return self.eur_max_holding_bars
+        from .utils.asset_specs import get_asset_spec
+        spec = get_asset_spec(symbol)
+        if spec["is_index"]:
+            return getattr(self, "nas_max_holding_bars", 0)
         return self.xau_max_holding_bars
+
+    def get_commission_per_lot(self, symbol: str = "XAUUSD") -> float:
+        from .utils.asset_specs import get_asset_spec
+        spec = get_asset_spec(symbol)
+        if spec["is_index"]:
+            return getattr(self, "backtest_index_commission_per_lot", 0.0)
+        return getattr(self, "backtest_commission_per_lot", 6.0)
+
 
     xau_london_start_hour: int = 7
     xau_london_start_minute: int = 45
     xau_london_end_hour: int = 10
-    xau_london_end_minute: int = 30
+    xau_london_end_minute: int = 0
 
     def is_in_xau_london_killzone(self, dt) -> bool:
-        """London killzone aligned to authentic London cash liquidity (07:45 - 10:30 UTC)."""
+        """London killzone aligned to authentic London cash liquidity (07:45 - London cash peak UTC)."""
         if dt is None:
+            return False
+        if getattr(self, "xau_friday_skip_london", True) and hasattr(dt, "weekday") and dt.weekday() == 4:
             return False
         h = dt.hour if hasattr(dt, "hour") else 0
         m = dt.minute if hasattr(dt, "minute") else 0
-        return (h == 7 and m >= 45) or (8 <= h < 10) or (h == 10 and m <= 30)
+        end_h = getattr(self, "xau_london_end_hour", 10)
+        end_m = getattr(self, "xau_london_end_minute", 0)
+        return (h == 7 and m >= 45) or (8 <= h < end_h) or (h == end_h and m <= end_m)
 
     def get_min_sl_distance(self, symbol: str = "XAUUSD", current_price: float = 0.0, m1_atr: float = 0.0) -> float:
-        if (symbol and "EUR" in symbol.upper()) or (0 < current_price < 10.0):
-            return getattr(self, "eur_min_sl_distance", 0.0)
+        from .utils.asset_specs import get_asset_spec
+        spec = get_asset_spec(symbol, current_price)
+        if spec["is_index"]:
+            dyn_nas = getattr(self, "nas_min_sl_distance", 5.0)
+            return max(dyn_nas, m1_atr * 1.5) if m1_atr > 0 else dyn_nas
         dyn_floor = getattr(self, "xau_min_sl_distance", 5.0)
-        if current_price > 1000:
-            dyn_floor = max(dyn_floor, current_price * 0.0016)
         if m1_atr > 0:
-            dyn_floor = max(dyn_floor, m1_atr * 1.5)
+            dyn_floor = max(dyn_floor, m1_atr * 2.0)
         return dyn_floor
 
     def get_fvg_expiry_bars(self, symbol: str = "XAUUSD") -> int:
-        if symbol and "EUR" in symbol.upper():
-            return self.eur_fvg_expiry_bars
+        from .utils.asset_specs import get_asset_spec
+        spec = get_asset_spec(symbol)
+        if spec["is_index"]:
+            return getattr(self, "nas_fvg_expiry_bars", 8)
         return self.xau_fvg_expiry_bars
 
     deviation_points: int = 20
@@ -332,13 +474,19 @@ class TradingConfig:
     poll_interval_ms: int = 500
 
     # London Strategic Edge (LSE) Live WebSocket & Vault API
-    lse_api_key: str = "lse_live_31f53152fae3fd762294057c154f19b2"
+    # BUG-10 FIX: API key must NOT be hardcoded — load from .env via LSE_API_KEY
+    lse_api_key: str = ""  # Set LSE_API_KEY in your .env file
     lse_ws_url: str = "wss://data-ws.londonstrategicedge.com"
     lse_http_url: str = "https://api.londonstrategicedge.com/vault"
     enable_lse_feed: bool = True
 
     backtest_initial_balance: float = 100000.0
     backtest_commission_pct: float = 0.0
+    backtest_commission_per_lot: float = 6.0
+    # BUG-11 FIX: NAS100 commission was 0.0 (unrealistically optimistic).
+    # Typical CFD NAS100 spread cost ~1.0 per lot per side. Set via BACKTEST_INDEX_COMMISSION_PER_LOT.
+    backtest_index_commission_per_lot: float = 1.0
+    backtest_apply_friction: bool = True
     backtest_slippage_points: float = 0.5
     backtest_spread_points: float = 20.0
 
@@ -361,7 +509,7 @@ class TradingConfig:
             if env_sym and env_sym != "XAUUSD":
                 symbols = [env_sym]
             else:
-                symbols = ["XAUUSD", "EURUSD"]
+                symbols = ["XAUUSD", "USTECH100M"]
 
         return cls(
             symbol=os.getenv("SYMBOL", cls.symbol),
@@ -437,6 +585,8 @@ class TradingConfig:
             enable_lse_feed=_env_bool("ENABLE_LSE_FEED", cls.enable_lse_feed),
             backtest_initial_balance=_env_float("BACKTEST_INITIAL_BALANCE", cls.backtest_initial_balance),
             backtest_commission_pct=_env_float("BACKTEST_COMMISSION_PCT", cls.backtest_commission_pct),
+            backtest_commission_per_lot=_env_float("BACKTEST_COMMISSION_PER_LOT", cls.backtest_commission_per_lot),
+            backtest_apply_friction=_env_bool("BACKTEST_APPLY_FRICTION", cls.backtest_apply_friction),
             backtest_slippage_points=_env_float("BACKTEST_SLIPPAGE_POINTS", cls.backtest_slippage_points),
             backtest_spread_points=_env_float("BACKTEST_SPREAD_POINTS", cls.backtest_spread_points),
             strategy_trigger_type=os.getenv("STRATEGY_TRIGGER_TYPE", cls.strategy_trigger_type),
@@ -493,38 +643,30 @@ class TradingConfig:
             xau_london_displacement_body_ratio=_env_float("XAU_LONDON_DISPLACEMENT_BODY_RATIO", cls.xau_london_displacement_body_ratio),
             xau_london_risk_per_trade=_env_float("XAU_LONDON_RISK_PER_TRADE", cls.xau_london_risk_per_trade),
             xau_overlap_risk_per_trade=_env_float("XAU_OVERLAP_RISK_PER_TRADE", cls.xau_overlap_risk_per_trade),
-            eur_target_r=_env_float("EUR_TARGET_R", cls.eur_target_r),
-            eur_breakeven_trigger_r=_env_float("EUR_BREAKEVEN_TRIGGER_R", cls.eur_breakeven_trigger_r),
-            eur_max_holding_bars=_env_int("EUR_MAX_HOLDING_BARS", cls.eur_max_holding_bars),
-            eur_session_start_hour=_env_int("EUR_SESSION_START_HOUR", cls.eur_session_start_hour),
-            eur_session_end_hour=_env_int("EUR_SESSION_END_HOUR", cls.eur_session_end_hour),
-            eur_filter_lunch_chop=_env_bool("EUR_FILTER_LUNCH_CHOP", cls.eur_filter_lunch_chop),
-            eur_lunch_start_hour=_env_int("EUR_LUNCH_START_HOUR", cls.eur_lunch_start_hour),
-            eur_lunch_end_hour=_env_int("EUR_LUNCH_END_HOUR", cls.eur_lunch_end_hour),
-            eur_require_retest=_env_bool("EUR_REQUIRE_RETEST", cls.eur_require_retest),
-            eur_retest_max_bars=_env_int("EUR_RETEST_MAX_BARS", cls.eur_retest_max_bars),
+            nas_risk_per_trade=_env_float("NAS_RISK_PER_TRADE", cls.nas_risk_per_trade),
+            nas_target_r=_env_float("NAS_TARGET_R", cls.nas_target_r),
+            nas_breakeven_trigger_r=_env_float("NAS_BREAKEVEN_TRIGGER_R", cls.nas_breakeven_trigger_r),
+            nas_breakeven_buffer_r=_env_float("NAS_BREAKEVEN_BUFFER_R", cls.nas_breakeven_buffer_r),
+            nas_max_holding_bars=_env_int("NAS_MAX_HOLDING_BARS", cls.nas_max_holding_bars),
+            nas_session_start_hour=_env_int("NAS_SESSION_START_HOUR", cls.nas_session_start_hour),
+            nas_session_start_minute=_env_int("NAS_SESSION_START_MINUTE", cls.nas_session_start_minute),
+            nas_session_end_hour=_env_int("NAS_SESSION_END_HOUR", cls.nas_session_end_hour),
+            nas_require_retest=_env_bool("NAS_REQUIRE_RETEST", cls.nas_require_retest),
+            nas_retest_max_bars=_env_int("NAS_RETEST_MAX_BARS", cls.nas_retest_max_bars),
             xau_require_retest=_env_bool("XAU_REQUIRE_RETEST", cls.xau_require_retest),
             xau_retest_max_bars=_env_int("XAU_RETEST_MAX_BARS", cls.xau_retest_max_bars),
             xau_strict_killzones=_env_bool("XAU_STRICT_KILLZONES", cls.xau_strict_killzones),
+            xau_session_cutoff_hour=_env_int("XAU_SESSION_CUTOFF_HOUR", cls.xau_session_cutoff_hour),
             xau_min_sl_distance=_env_float("XAU_MIN_SL_DISTANCE", cls.xau_min_sl_distance),
-            eur_min_sl_distance=_env_float("EUR_MIN_SL_DISTANCE", cls.eur_min_sl_distance),
+            nas_min_sl_distance=_env_float("NAS_MIN_SL_DISTANCE", cls.nas_min_sl_distance),
             # El Professor Hidden Guards
             xau_london_close_guard=_env_bool("XAU_LONDON_CLOSE_GUARD", cls.xau_london_close_guard),
             xau_london_close_cutoff_hour=_env_int("XAU_LONDON_CLOSE_CUTOFF_HOUR", cls.xau_london_close_cutoff_hour),
             xau_london_close_cutoff_min=_env_int("XAU_LONDON_CLOSE_CUTOFF_MIN", cls.xau_london_close_cutoff_min),
-            eur_atr_circuit_breaker=_env_bool("EUR_ATR_CIRCUIT_BREAKER", cls.eur_atr_circuit_breaker),
-            eur_atr_spike_lookback=_env_int("EUR_ATR_SPIKE_LOOKBACK", cls.eur_atr_spike_lookback),
-            eur_atr_spike_mult=_env_float("EUR_ATR_SPIKE_MULT", cls.eur_atr_spike_mult),
-            eur_h4_bias_guard=_env_bool("EUR_H4_BIAS_GUARD", cls.eur_h4_bias_guard),
-            eur_h4_ema_fast=_env_int("EUR_H4_EMA_FAST", cls.eur_h4_ema_fast),
-            eur_h4_ema_slow=_env_int("EUR_H4_EMA_SLOW", cls.eur_h4_ema_slow),
-            eur_consec_loss_guard=_env_bool("EUR_CONSEC_LOSS_GUARD", cls.eur_consec_loss_guard),
-            eur_consec_loss_max=_env_int("EUR_CONSEC_LOSS_MAX", cls.eur_consec_loss_max),
-            eur_consec_loss_pause_hours=_env_int("EUR_CONSEC_LOSS_PAUSE_HOURS", cls.eur_consec_loss_pause_hours),
             # Option A Scaling Parameters
             max_daily_trades=_env_int("MAX_DAILY_TRADES", cls.max_daily_trades),
             max_concurrent_pending_orders=_env_int("MAX_CONCURRENT_PENDING_ORDERS", cls.max_concurrent_pending_orders),
-            eur_fvg_expiry_bars=_env_int("EUR_FVG_EXPIRY_BARS", cls.eur_fvg_expiry_bars),
+            nas_fvg_expiry_bars=_env_int("NAS_FVG_EXPIRY_BARS", cls.nas_fvg_expiry_bars),
             # Dynamic Profit Compounding & Net Dollar Beta Gate
             enable_profit_compounding=_env_bool("ENABLE_PROFIT_COMPOUNDING", cls.enable_profit_compounding),
             initial_account_balance=_env_float("INITIAL_ACCOUNT_BALANCE", cls.initial_account_balance),
@@ -538,6 +680,51 @@ class TradingConfig:
             runner_trail_atr_mult=_env_float("RUNNER_TRAIL_ATR_MULT", cls.runner_trail_atr_mult),
             fvg_adaptive_retest_tolerance_pct=_env_float("FVG_ADAPTIVE_RETEST_TOLERANCE_PCT", cls.fvg_adaptive_retest_tolerance_pct),
             enable_fvg_pyramiding=_env_bool("ENABLE_FVG_PYRAMIDING", cls.enable_fvg_pyramiding),
+            # Day-of-Week Risk & Session Optimizations
+            friday_skip_ny_session=_env_bool("FRIDAY_SKIP_NY_SESSION", cls.friday_skip_ny_session),
+            tuesday_reduced_risk=_env_bool("TUESDAY_REDUCED_RISK", cls.tuesday_reduced_risk),
+            tuesday_risk_scale=_env_float("TUESDAY_RISK_SCALE", cls.tuesday_risk_scale),
+            tuesday_trade_enabled=_env_bool("TUESDAY_TRADE_ENABLED", cls.tuesday_trade_enabled),
+            # London Session Structural Optimization & Profit Protection
+            xau_london_require_h1_trend=_env_bool("XAU_LONDON_REQUIRE_H1_TREND", cls.xau_london_require_h1_trend),
+            xau_london_protect_profits=_env_bool("XAU_LONDON_PROTECT_PROFITS", cls.xau_london_protect_profits),
+            xau_london_end_hour=_env_int("XAU_LONDON_END_HOUR", cls.xau_london_end_hour),
+            xau_london_end_minute=_env_int("XAU_LONDON_END_MINUTE", cls.xau_london_end_minute),
+            # Guard 5 (XAU) env overrides
+            xau_consec_loss_guard=_env_bool("XAU_CONSEC_LOSS_GUARD", cls.xau_consec_loss_guard),
+            xau_consec_loss_max=_env_int("XAU_CONSEC_LOSS_MAX", cls.xau_consec_loss_max),
+            # Guard 5 (NAS) env overrides — BUG-17 FIX: these were missing from from_env()
+            nas_consec_loss_guard=_env_bool("NAS_CONSEC_LOSS_GUARD", cls.nas_consec_loss_guard),
+            nas_consec_loss_max=_env_int("NAS_CONSEC_LOSS_MAX", cls.nas_consec_loss_max),
+            # Backtest commission overrides
+            backtest_index_commission_per_lot=_env_float("BACKTEST_INDEX_COMMISSION_PER_LOT", cls.backtest_index_commission_per_lot),
+            # Institutional Conviction Sizing & Multi-Tranche Parameters
+            enable_conviction_sizing=_env_bool("ENABLE_CONVICTION_SIZING", cls.enable_conviction_sizing),
+            conviction_scale_a_plus=_env_float("CONVICTION_SCALE_A_PLUS", cls.conviction_scale_a_plus),
+            conviction_scale_a=_env_float("CONVICTION_SCALE_A", cls.conviction_scale_a),
+            conviction_scale_b=_env_float("CONVICTION_SCALE_B", cls.conviction_scale_b),
+            conviction_scale_c=_env_float("CONVICTION_SCALE_C", cls.conviction_scale_c),
+            xau_a_plus_ny_core_only=_env_bool("XAU_A_PLUS_NY_CORE_ONLY", cls.xau_a_plus_ny_core_only),
+            xau_a_plus_block_h1_bullish=_env_bool("XAU_A_PLUS_BLOCK_H1_BULLISH", cls.xau_a_plus_block_h1_bullish),
+            xau_a_plus_min_sl_dist=_env_float("XAU_A_PLUS_MIN_SL_DIST", cls.xau_a_plus_min_sl_dist),
+            tuesday_breakeven_trigger_r=_env_float("TUESDAY_BREAKEVEN_TRIGGER_R", cls.tuesday_breakeven_trigger_r),
+            partial_tp_tranche1_r=_env_float("PARTIAL_TP_TRANCHE1_R", cls.partial_tp_tranche1_r),
+            partial_tp_tranche1_pct=_env_float("PARTIAL_TP_TRANCHE1_PCT", cls.partial_tp_tranche1_pct),
+            partial_tp_tranche2_r=_env_float("PARTIAL_TP_TRANCHE2_R", cls.partial_tp_tranche2_r),
+            partial_tp_tranche2_pct=_env_float("PARTIAL_TP_TRANCHE2_PCT", cls.partial_tp_tranche2_pct),
+            nas_killzone_morning_start_min=_env_int("NAS_KILLZONE_MORNING_START_MIN", cls.nas_killzone_morning_start_min),
+            nas_london_close_pause_start_hour=_env_int("NAS_LONDON_CLOSE_PAUSE_START_HOUR", cls.nas_london_close_pause_start_hour),
+            nas_london_close_pause_end_min=_env_int("NAS_LONDON_CLOSE_PAUSE_END_MIN", cls.nas_london_close_pause_end_min),
+            nas_require_h1_trend=_env_bool("NAS_REQUIRE_H1_TREND", cls.nas_require_h1_trend),
+            nas_stagnation_bars=_env_int("NAS_STAGNATION_BARS", cls.nas_stagnation_bars),
+            conviction_scale_nas_a_plus=_env_float("CONVICTION_SCALE_NAS_A_PLUS", cls.conviction_scale_nas_a_plus),
+            enable_universal_capital_adapter=_env_bool("ENABLE_UNIVERSAL_CAPITAL_ADAPTER", cls.enable_universal_capital_adapter),
+            is_cent_account=_env_bool("IS_CENT_ACCOUNT", cls.is_cent_account),
+            whale_slice_threshold_lots=_env_float("WHALE_SLICE_THRESHOLD_LOTS", cls.whale_slice_threshold_lots),
+            whale_max_child_slice_lots=_env_float("WHALE_MAX_CHILD_SLICE_LOTS", cls.whale_max_child_slice_lots),
+            enable_l2_depth=_env_bool("ENABLE_L2_DEPTH", cls.enable_l2_depth),
+            l2_depth_levels=_env_int("L2_DEPTH_LEVELS", cls.l2_depth_levels),
+            l2_min_obi_threshold=_env_float("L2_MIN_OBI_THRESHOLD", cls.l2_min_obi_threshold),
         )
 
 

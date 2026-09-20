@@ -175,8 +175,6 @@ class EconomicCalendar:
     def is_blocked(self, before_minutes: int = 30, after_minutes: int = 30, symbol: str = "XAUUSD") -> Tuple[bool, Optional[str]]:
         now = datetime.now(timezone.utc).timestamp()
         target_currencies = {"USD"}
-        if "EUR" in symbol.upper():
-            target_currencies.add("EUR")
 
         for event in self._events:
             event_ts = event.get("timestamp", 0) if isinstance(event, dict) else getattr(event, "timestamp", 0)

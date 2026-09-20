@@ -334,9 +334,9 @@ def test_agent_01_market_scout():
     team = InstitutionalResearchTeam(cfg)
     feeds = {
         "XAUUSD": _make_dummy_feed(True),
-        "EURUSD": _make_dummy_feed(False),
+        "USTECH100M": _make_dummy_feed(False),
     }
-    res = team.scout(["XAUUSD", "EURUSD"], feeds, session_name="LONDON")
+    res = team.scout(["XAUUSD", "USTECH100M"], feeds, session_name="LONDON")
     assert len(res.candidates) == 2
     assert res.session == "LONDON"
     assert res.candidates[0].priority_rank == 1

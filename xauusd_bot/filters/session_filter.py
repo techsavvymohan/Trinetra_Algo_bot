@@ -49,4 +49,36 @@ class SessionFilter:
         return False, f"Outside NY Liquidity Window [{ny_time_str} NY, target: {start_time}-{end_time}]"
 
 
+def is_friday_weekend_close(
+    now: datetime | None = None,
+    cutoff_hour: int = 20,
+    cutoff_min: int = 45,
+) -> bool:
+    """Check if the current UTC time is within the Friday EOD or Weekend market close period.
+
+    Triggers:
+    - Friday at or after cutoff (e.g. 20:45 UTC onwards)
+    - All day Saturday
+    - Sunday prior to session reopen (before 22:00 UTC)
+    """
+    if now is None:
+        from datetime import timezone
+        now = datetime.now(timezone.utc)
+    elif getattr(now, "tzinfo", None) is not None:
+        from datetime import timezone
+        now = now.astimezone(timezone.utc)
+
+    wd = now.weekday()
+    h = now.hour
+    m = now.minute
+
+    if wd == 4:  # Friday
+        return h > cutoff_hour or (h == cutoff_hour and m >= cutoff_min)
+    elif wd == 5:  # Saturday
+        return True
+    elif wd == 6:  # Sunday
+        return h < 22
+    return False
+
+
 

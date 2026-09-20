@@ -23,20 +23,63 @@ class DailyLossTracker:
         self.reset_tz = reset_tz
         self.state: Optional[DailyState] = None
 
-    def update(self, account: AccountInfo):
+    def calibrate_from_broker(self, connector, account: AccountInfo):
+        """Calibrate day start equity and daily PnL directly from live broker closed deals (Zero DB dependency)."""
+        ref_time = account.server_time or datetime.now(timezone.utc).replace(tzinfo=None)
+        today = broker_date(ref_time, self.reset_hour, self.reset_tz)
+
+        today_pnl = 0.0
+        trades_count = 0
+        if connector and hasattr(connector, "history_deals_get"):
+            try:
+                today_midnight = datetime.strptime(today, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                deals = connector.history_deals_get(today_midnight, datetime.now(timezone.utc))
+                if deals:
+                    for d in deals:
+                        entry_type = getattr(d, "entry", None)
+                        if entry_type in (1, "out", "DEAL_ENTRY_OUT", 3, "DEAL_ENTRY_OUT_BY"):
+                            today_pnl += (getattr(d, "profit", 0.0) + getattr(d, "swap", 0.0) + getattr(d, "commission", 0.0))
+                            trades_count += 1
+            except Exception as e:
+                log.warning("Could not fetch broker history deals for calibration: %s", e)
+
+        start_equity = max(1.0, account.balance - today_pnl)
+        peak_equity = max(start_equity, account.equity)
+
+        self.state = DailyState(
+            date=today,
+            start_equity=start_equity,
+            current_equity=account.equity,
+            peak_equity=peak_equity,
+            daily_pnl=account.equity - start_equity,
+            trades_today=trades_count,
+            kill_switch_active=False,
+        )
+        log.info(
+            "🎯 Dynamic Broker Daily Calibration: date=%s start_equity=%.2f current_equity=%.2f today_pnl=%.2f trades=%d",
+            today, start_equity, account.equity, today_pnl, trades_count,
+        )
+
+    def update(self, account: AccountInfo, connector=None):
         today = broker_date(account.server_time or datetime.now(timezone.utc).replace(tzinfo=None),
                             self.reset_hour, self.reset_tz)
         if self.state is None or self.state.date != today:
-            self.state = DailyState(
-                date=today,
-                start_equity=account.equity,
-                current_equity=account.equity,
-                peak_equity=account.equity,
-                daily_pnl=0.0,
-                trades_today=0,
-                kill_switch_active=False,
-            )
-            log.info("New daily state: date=%s start_equity=%.2f", today, account.equity)
+            if connector is not None:
+                self.calibrate_from_broker(connector, account)
+            else:
+                # FTMO/Prop-firm rule: anchor day start to max(balance, equity) to protect against midnight floating drawdown
+                start_equity = max(account.balance, account.equity)
+                self.state = DailyState(
+                    date=today,
+                    start_equity=start_equity,
+                    current_equity=account.equity,
+                    peak_equity=max(start_equity, account.equity),
+                    daily_pnl=account.equity - start_equity,
+                    trades_today=0,
+                    kill_switch_active=False,
+                )
+                log.info("New daily state: date=%s start_equity=%.2f (balance=%.2f equity=%.2f)",
+                         today, start_equity, account.balance, account.equity)
         else:
             self.state.current_equity = account.equity
             self.state.daily_pnl = account.equity - self.state.start_equity

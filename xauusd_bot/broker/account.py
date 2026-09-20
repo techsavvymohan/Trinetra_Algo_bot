@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Optional
 
 from ..models import AccountInfo
+from ..utils.asset_specs import get_asset_spec
 
 log = logging.getLogger("xauusd_bot.broker.account")
 
@@ -38,6 +39,7 @@ class AccountManager:
         self._tick_cache.clear()
         tick = self._symbol_info_tick()
         self._last_info = AccountInfo(
+            login=getattr(info, "login", 0),
             balance=info.balance,
             equity=info.equity,
             margin=info.margin,
@@ -64,17 +66,16 @@ class AccountManager:
         info = self._symbol_info(symbol)
         if info is None:
             return 1.0
-        curr_profit = getattr(info, "currency_profit", "")
-        acct_curr = getattr(self._last_info, "currency", "USD") if self._last_info else "USD"
-        if curr_profit == acct_curr or curr_profit == "USD":
-            return 1.0
-        return info.trade_tick_value or 1.0
+        tick_val = getattr(info, "trade_tick_value", None)
+        if tick_val is not None and isinstance(tick_val, (int, float)) and tick_val > 0:
+            return float(tick_val)
+        return 1.0
 
     def contract_size(self, symbol: str = "XAUUSD") -> int:
         info = self._symbol_info(symbol)
         if info and info.trade_contract_size:
             return int(info.trade_contract_size)
-        return 100000 if "EUR" in symbol else 100
+        return int(get_asset_spec(symbol)["contract_sz"])
 
     def lot_step(self, symbol: str = "XAUUSD") -> float:
         info = self._symbol_info(symbol)
@@ -92,9 +93,7 @@ class AccountManager:
         info = self._symbol_info(symbol)
         if info and hasattr(info, "point") and isinstance(info.point, (int, float)):
             return info.point
-        if "EUR" in symbol.upper():
-            return 0.00001
-        return 0.0001
+        return float(get_asset_spec(symbol)["tick_sz"])
 
     def tick_size(self, symbol: str = "XAUUSD") -> float:
         info = self._symbol_info(symbol)

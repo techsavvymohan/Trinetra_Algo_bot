@@ -58,18 +58,12 @@ def main():
         print("[WARNING] MT5 'Algo Trading' button is disabled! Please click 'Algo Trading' in MT5.")
         return 1
 
-    symbol = args.symbol.upper()
-    if not mt5.symbol_select(symbol, True):
-        # Try finding broker symbol with suffix (e.g. XAUUSD.r, XAUUSD.x, GOLD)
-        all_syms = [s.name for s in mt5.symbols_get() or []]
-        matches = [s for s in all_syms if symbol in s.upper()]
-        if matches:
-            symbol = matches[0]
-            mt5.symbol_select(symbol, True)
-        else:
-            print(f"[ERROR] Symbol {symbol} not found on broker feed.")
-            mt5.shutdown()
-            return 1
+    from xauusd_bot.broker.mt5_connector import MT5Connector
+    connector = MT5Connector(cfg.mt5)
+    connector._connected = True
+    symbol = connector.resolve_broker_symbol(args.symbol)
+    mt5.symbol_select(symbol, True)
+    print(f"Auto-Resolved Trading Symbol: '{args.symbol}' -> '{symbol}'")
 
     tick = mt5.symbol_info_tick(symbol)
     sym_info = mt5.symbol_info(symbol)

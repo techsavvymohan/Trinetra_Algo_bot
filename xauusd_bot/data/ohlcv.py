@@ -9,14 +9,11 @@ _MIN_CHUNK_PCT = 0.9
 
 log = logging.getLogger("xauusd_bot.data.ohlcv")
 
-TIMEFRAMES = ["M1", "M5", "M15", "M30", "H1", "H4"]
+TIMEFRAMES = ["M1", "M15", "H1"]
 TF_BARS_LOOKBACK = {
     "M1": 100,
-    "M5": 200,
     "M15": 200,
-    "M30": 200,
     "H1": 200,
-    "H4": 200,
 }
 
 
@@ -87,16 +84,24 @@ class MultiTFData:
         )
 
     def get(self, tf: str) -> Optional[TimeframeData]:
-        return self._data.get(tf)
+        d = self._data.get(tf)
+        if d is not None:
+            return d
+        if tf in ("M5", "H4"):
+            agg = self.aggregate_to_tf(tf)
+            if agg is not None:
+                self._data[tf] = agg
+                return agg
+        return None
 
     def latest_close(self, tf: str) -> float:
-        d = self._data.get(tf)
+        d = self.get(tf)
         if d and d.close:
             return d.close[-1]
         return 0.0
 
     def latest_time(self, tf: str) -> Optional[datetime]:
-        d = self._data.get(tf)
+        d = self.get(tf)
         if d and d.time:
             return d.time[-1]
         return None
@@ -111,7 +116,7 @@ class MultiTFData:
         }
         src_tf = source_map.get(target_tf)
         if not src_tf:
-            return self.get(target_tf)
+            return self._data.get(target_tf)
         src_data = self._data.get(src_tf)
         if src_data is None:
             return None
@@ -159,5 +164,6 @@ class MultiTFData:
             if info and hasattr(info, "point") and isinstance(info.point, (int, float)):
                 pt = info.point
         if not pt:
-            pt = 0.0001 if "EUR" in self.symbol else 0.01
+            from ..utils.asset_specs import get_asset_spec
+            pt = get_asset_spec(self.symbol)["tick_sz"]
         return (tick.ask - tick.bid) / pt

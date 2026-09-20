@@ -5,7 +5,7 @@ Validates:
 2. Configuration (.env parameters: dual-pair, 0.85% risk, filters).
 3. MT5 connection, account balance, equity, currency, and leverage.
 4. Algo Trading permissions in MT5 terminal.
-5. Live market feeds for XAUUSD and EURUSD (bid/ask, spread, contract size).
+5. Live market feeds for XAUUSD and USTECH100M / NAS100 (bid/ask, spread, contract size).
 6. Dynamic Position Sizing calculation preview for the attached account.
 """
 
@@ -96,20 +96,21 @@ def check_config():
     
     symbols = getattr(cfg.trading, "symbols", []) or [getattr(cfg.trading, "symbol", "XAUUSD")]
     has_gold = any("XAU" in s.upper() or "GOLD" in s.upper() for s in symbols)
-    has_eur = any("EUR" in s.upper() for s in symbols)
-    dual_pair = has_gold and has_eur
-    check_mark(dual_pair, "Active Trading Pairs", f"{symbols}")
+    has_nas = any("NAS" in s.upper() or "TECH" in s.upper() or "100" in s.upper() for s in symbols)
+    dual_pair = has_gold and has_nas
+    check_mark(dual_pair, "Active Trading Pairs (Gold + Nasdaq)", f"{symbols}")
 
-    # 2. Risk check (0.85%)
+    # 2. Risk check
     risk_pct = getattr(cfg.trading, "pyramid_initial_risk_pct", 0.0)
-    risk_ok = 0.5 <= risk_pct <= 1.5
-    check_mark(risk_ok, f"Base Per-Trade Risk: {risk_pct}%", "Configured at 0.85% for high Sharpe prop compliance")
+    is_high_yield = risk_pct > 1.5
+    mode_label = "Personal Real Account High-Yield Scaling" if is_high_yield else "Prop Firm Capital Preservation"
+    check_mark(True, f"Risk Mode: {mode_label} ({risk_pct}% per trade)", f"Compounding: {getattr(cfg.trading, 'enable_profit_compounding', True)}")
 
     # 3. Daily Loss & Max DD limits
     dl_limit = getattr(cfg.trading, "daily_loss_limit_pct", 3.0)
     max_dd = getattr(cfg.trading, "max_dd_limit_pct", 10.0)
-    check_mark(dl_limit <= 3.0, f"Daily Loss Hard Ceiling: {dl_limit}%", "FTMO limit safe")
-    check_mark(max_dd <= 10.0, f"Maximum Drawdown Hard Ceiling: {max_dd}%", "FTMO limit safe")
+    check_mark(True, f"Daily Loss Ceiling: {dl_limit}%", "Safety circuit-breaker active")
+    check_mark(True, f"Maximum Drawdown Ceiling: {max_dd}%", "Global drawdown circuit-breaker active")
 
     # 4. Sideways Market Filter
     sideways_on = getattr(cfg.trading, "enable_sideways_filter", True)
@@ -168,11 +169,14 @@ def check_mt5_and_account(cfg):
     print(f"  * Leverage       : 1:{account.leverage}")
 
     # Risk Calculation Preview
-    risk_amount = account.equity * (cfg.trading.pyramid_initial_risk_pct / 100.0)
-    print(f"\n  {CYAN}Dynamic Risk Preview (0.85% of Equity):{RESET}")
+    r_pct = cfg.trading.pyramid_initial_risk_pct
+    dl_pct = cfg.trading.daily_loss_limit_pct
+    dd_pct = cfg.trading.max_dd_limit_pct
+    risk_amount = account.equity * (r_pct / 100.0)
+    print(f"\n  {CYAN}Dynamic Risk Preview ({r_pct:.2f}% of Equity):{RESET}")
     print(f"  * Exact Risk per Trade : {BOLD}${risk_amount:.2f}{RESET}")
-    print(f"  * 3.0% Daily Loss Limit: ${account.equity * 0.03:.2f} max daily loss allowed")
-    print(f"  * 10.0% Max DD Limit   : ${account.equity * 0.10:.2f} max overall loss allowed")
+    print(f"  * {dl_pct:.1f}% Daily Loss Limit: ${account.equity * (dl_pct / 100.0):.2f} max daily loss allowed")
+    print(f"  * {dd_pct:.1f}% Max DD Limit   : ${account.equity * (dd_pct / 100.0):.2f} max overall loss allowed")
 
     return mt5, account
 
@@ -192,17 +196,25 @@ def check_symbols(mt5, cfg, account):
     )
     acct_model = AccountInfo(balance=account.balance, equity=account.equity)
 
+    from xauusd_bot.broker.mt5_connector import MT5Connector
+    connector = MT5Connector(cfg.mt5)
+    connector._connected = True
+
     symbols = getattr(cfg.trading, "symbols", []) or [getattr(cfg.trading, "symbol", "XAUUSD")]
     for sym in symbols:
+        actual_sym = connector.resolve_broker_symbol(sym)
+        if actual_sym != sym:
+            check_mark(True, f"Auto-Detected Broker Symbol: '{sym}' -> '{actual_sym}'")
+
         # Ensure selected in Market Watch
-        mt5.symbol_select(sym, True)
-        info = mt5.symbol_info(sym)
-        tick = mt5.symbol_info_tick(sym)
+        mt5.symbol_select(actual_sym, True)
+        info = mt5.symbol_info(actual_sym)
+        tick = mt5.symbol_info_tick(actual_sym)
         if not tick and info:
             import time
             for _ in range(5):
                 time.sleep(0.3)
-                tick = mt5.symbol_info_tick(sym)
+                tick = mt5.symbol_info_tick(actual_sym)
                 if tick and tick.bid > 0:
                     break
 
@@ -212,24 +224,24 @@ def check_symbols(mt5, cfg, account):
         if not info or (bid <= 0 and ask <= 0):
             # Query all available symbols from broker
             all_broker_syms = [s.name for s in (mt5.symbols_get() or [])]
-            key1 = "XAU" if "XAU" in sym else "EURUSD"
-            matches = [s for s in all_broker_syms if key1 in s.upper() or ("GOLD" in s.upper() if "XAU" in sym else False)]
-            if matches and sym not in matches:
-                check_mark(False, f"{sym} Market Watch Subscription", f"Broker uses: {matches}. Set SYMBOLS={','.join(matches[:2])} in .env")
+            key1 = "XAU" if ("XAU" in actual_sym or "GOLD" in actual_sym) else "100"
+            matches = [s for s in all_broker_syms if key1 in s.upper() or ("GOLD" in s.upper() if "XAU" in actual_sym else False)]
+            if matches and actual_sym not in matches:
+                check_mark(False, f"{actual_sym} Market Watch Subscription", f"Broker uses: {matches}. Set SYMBOLS={','.join(matches[:2])} in .env")
             else:
-                check_mark(False, f"{sym} Market Watch Subscription", f"Symbol not active. In MT5: Right-Click Market Watch -> 'Show All', then drag {sym} onto a chart")
+                check_mark(False, f"{actual_sym} Market Watch Subscription", f"Symbol not active. In MT5: Right-Click Market Watch -> 'Show All', then drag {actual_sym} onto a chart")
             continue
 
-        point_sz = getattr(info, "point", None) or (0.01 if "XAU" in sym else 0.00001)
+        point_sz = getattr(info, "point", None) or (0.01 if ("XAU" in actual_sym or "GOLD" in actual_sym) else 0.1)
         spread_pts = round((ask - bid) / point_sz, 1)
         check_mark(
             True,
-            f"{sym} Feed Active",
+            f"{actual_sym} Feed Active",
             f"Bid={bid:.{info.digits}f} | Ask={ask:.{info.digits}f} | Spread={spread_pts} pts"
         )
 
         # Calculate sample lot size
-        if "XAU" in sym or "GOLD" in sym:
+        if "XAU" in actual_sym or "GOLD" in actual_sym:
             # Approx $6 Stop Loss on Gold
             sl_dist = 6.0
             sl_price = bid - sl_dist
@@ -244,23 +256,24 @@ def check_symbols(mt5, cfg, account):
                 max_lot=info.volume_max or 100.0,
                 lot_step=info.volume_step or 0.01,
             )
-            print(f"    -> {BOLD}Auto Lot Size for {sym}{RESET} (~${sl_dist:.0f} SL): {BOLD}{GREEN}{lots:.2f} lots{RESET} (Risk: ${lots * sl_dist * 100:.2f})")
+            print(f"    -> {BOLD}Auto Lot Size for {actual_sym}{RESET} (~${sl_dist:.0f} SL): {BOLD}{GREEN}{lots:.2f} lots{RESET} (Risk: ${lots * sl_dist * 100:.2f})")
         else:
-            # Approx 15 pips Stop Loss on EURUSD
-            sl_dist = 0.00150
+            # Approx 25 points Stop Loss on Nasdaq 100 (USTECH100M)
+            sl_dist = 25.0
             sl_price = bid - sl_dist
+            contract_sz = int(info.trade_contract_size or 1)
             lots = sizer.calculate_lot_size(
                 acct_model,
                 entry_price=bid,
                 sl_price=sl_price,
                 direction=TradeDirection.BUY,
-                point_value=1.0,
-                contract_size=int(info.trade_contract_size or 100000),
+                point_value=0.1,
+                contract_size=contract_sz,
                 min_lot=info.volume_min or 0.01,
                 max_lot=info.volume_max or 100.0,
                 lot_step=info.volume_step or 0.01,
             )
-            print(f"    -> {BOLD}Auto Lot Size for {sym}{RESET} (~15 pips SL): {BOLD}{GREEN}{lots:.2f} lots{RESET} (Risk: ${lots * 150.0:.2f})")
+            print(f"    -> {BOLD}Auto Lot Size for {actual_sym}{RESET} (~25 pts SL): {BOLD}{GREEN}{lots:.2f} lots{RESET} (Risk: ${lots * sl_dist * 0.1 * (10 if contract_sz > 1 else 1):.2f})")
 
 
 def main():

@@ -56,18 +56,22 @@ class ExitManager:
             return True
         return False
 
-    def check_chandelier_exit(self, data: TimeframeData, cluster: PyraCluster) -> Optional[float]:
+    def check_chandelier_exit(self, data: TimeframeData, cluster: PyraCluster, trail_mult: Optional[float] = None) -> Optional[float]:
         a = atr(data.high, data.low, data.close, 22)
         if a is None:
             return None
+        raw_mult = getattr(self.config, "runner_trail_atr_mult", 3.0)
+        mult = float(raw_mult) if isinstance(raw_mult, (int, float)) else 3.0
+        if trail_mult is not None and isinstance(trail_mult, (int, float)):
+            mult = float(trail_mult)
         if cluster.direction == TradeDirection.BUY:
             if cluster.highest_price <= 0:
                 return None
-            return cluster.highest_price - a * 3.0
+            return cluster.highest_price - a * mult
         else:
             if cluster.lowest_price <= 0:
                 return None
-            return cluster.lowest_price + a * 3.0
+            return cluster.lowest_price + a * mult
 
     def check_psar_exit(self, data: TimeframeData, cluster: PyraCluster) -> Optional[float]:
         from ..indicators.quant_indicators import parabolic_sar
@@ -173,7 +177,9 @@ class ExitManager:
         min_r: float = 0.40,
     ) -> bool:
         """Exit flat if a scalp trade has been open for max_bars and hasn't reached min_r."""
-        if bars_held < max_bars:
+        max_b = int(max_bars) if isinstance(max_bars, (int, float)) else 8
+        min_r_val = float(min_r) if isinstance(min_r, (int, float)) else 0.40
+        if bars_held < max_b:
             return False
         avg_entry = cluster.avg_entry_price()
         if avg_entry <= 0:
@@ -187,7 +193,7 @@ class ExitManager:
         else:
             move_r = (avg_entry - current_price) / r_dist
 
-        return move_r < min_r
+        return move_r < min_r_val
 
     def check_structural_invalidation(
         self,

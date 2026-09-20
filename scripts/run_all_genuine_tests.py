@@ -183,25 +183,25 @@ def main():
     
     # 1. Audit Datasets
     audit_xau = audit_dataset("data/genuine_jan_aug_2026_xauusd.json", "XAUUSD")
-    audit_eur = audit_dataset("data/genuine_jan_aug_2026_eurusd.json", "EURUSD")
+    audit_nas = audit_dataset("data/genuine_recent_nas100.json", "USTECH100M")
 
     # Load Data
     with open("data/genuine_jan_aug_2026_xauusd.json") as f:
         data_xau = json.load(f)
-    with open("data/genuine_jan_aug_2026_eurusd.json") as f:
-        data_eur = json.load(f)
+    with open("data/genuine_recent_nas100.json") as f:
+        data_nas = json.load(f)
 
     # 2. Multi-Regime Walk-Forward Tests
     regimes_xau = run_sub_period_tests(data_xau, "XAUUSD")
-    regimes_eur = run_sub_period_tests(data_eur, "EURUSD")
+    regimes_nas = run_sub_period_tests(data_nas, "USTECH100M")
 
     # 3. Capital Scaling Tests
     scaling_xau = run_capital_scaling_tests(data_xau, "XAUUSD")
-    scaling_eur = run_capital_scaling_tests(data_eur, "EURUSD")
+    scaling_nas = run_capital_scaling_tests(data_nas, "USTECH100M")
 
     # 4. Broker Friction Stress Tests
     friction_xau = run_friction_stress_tests(data_xau, "XAUUSD")
-    friction_eur = run_friction_stress_tests(data_eur, "EURUSD")
+    friction_nas = run_friction_stress_tests(data_nas, "USTECH100M")
 
     # 5. Ultra 10,000 Monte Carlo
     cfg = Config.load()
@@ -212,20 +212,19 @@ def main():
     res_xau = eng_xau.run(data_xau)
     mc_xau = run_ultra_monte_carlo(res_xau.get("trade_pnls", []), "XAUUSD", n_sims=10000)
 
-    eng_eur = BacktestEngine(
-        cfg, initial_balance=10000.0, symbol="EURUSD",
-        start_date=datetime(2026, 1, 2), end_date=datetime(2026, 8, 31),
+    eng_nas = BacktestEngine(
+        cfg, initial_balance=10000.0, symbol="USTECH100M",
     )
-    res_eur = eng_eur.run(data_eur)
-    mc_eur = run_ultra_monte_carlo(res_eur.get("trade_pnls", []), "EURUSD", n_sims=10000)
+    res_nas = eng_nas.run(data_nas)
+    mc_nas = run_ultra_monte_carlo(res_nas.get("trade_pnls", []), "USTECH100M", n_sims=10000)
 
     # Save comprehensive results to JSON
     summary = {
-        "audit": {"xau": audit_xau, "eur": audit_eur},
-        "regimes": {"xau": regimes_xau, "eur": regimes_eur},
-        "scaling": {"xau": scaling_xau, "eur": scaling_eur},
-        "friction": {"xau": friction_xau, "eur": friction_eur},
-        "monte_carlo_10k": {"xau": vars(mc_xau) if hasattr(mc_xau, "__dict__") else str(mc_xau), "eur": vars(mc_eur) if hasattr(mc_eur, "__dict__") else str(mc_eur)},
+        "audit": {"xau": audit_xau, "nas": audit_nas},
+        "regimes": {"xau": regimes_xau, "nas": regimes_nas},
+        "scaling": {"xau": scaling_xau, "nas": scaling_nas},
+        "friction": {"xau": friction_xau, "nas": friction_nas},
+        "monte_carlo_10k": {"xau": vars(mc_xau) if hasattr(mc_xau, "__dict__") else str(mc_xau), "nas": vars(mc_nas) if hasattr(mc_nas, "__dict__") else str(mc_nas)},
     }
     with open("institutional_master_verification_results.json", "w") as out:
         json.dump(summary, out, indent=2, default=str)

@@ -302,3 +302,41 @@ def test_volatility_step_trailing_ratchet():
     # At price 2065 (+3.25R): ratchets stop to +2.0R = 2040
     sl_30 = em.check_volatility_step_trail(cluster, current_price=2065)
     assert sl_30 == 2040.0
+
+
+def test_moc_create_pending_and_confirm_retest():
+    tm, order_entry = _make_trade_manager()
+    acc = make_account(100000.0)
+    _initialize_daily_loss(tm, acc, 100000.0)
+    sig = make_signal(TradeDirection.BUY)
+
+    # 1. Register pending retest cluster (MoC) - Zero market orders sent yet!
+    cluster = tm.create_pending_retest_cluster(
+        signal=sig,
+        limit_price=2000.0,
+        account=acc,
+        point_value=1.0,
+        contract_size=100,
+        min_lot=0.01,
+        lot_step=0.01,
+    )
+    assert cluster is not None
+    assert cluster.status == TradeStatus.PENDING
+    assert cluster.limit_price == 2000.0
+    assert len(cluster.legs) == 0  # No legs placed on broker yet!
+    order_entry.place_market_order.assert_not_called()
+
+    # 2. Confirm retest -> executes Market Order on MT5!
+    ok = tm.confirm_retest_and_enter(
+        cluster=cluster,
+        account=acc,
+        point_value=1.0,
+        contract_size=100,
+        min_lot=0.01,
+        lot_step=0.01,
+    )
+    assert ok is True
+    assert cluster.status == TradeStatus.OPEN
+    assert len(cluster.legs) == 1
+    assert cluster.legs[0].status == TradeStatus.OPEN
+    order_entry.place_market_order.assert_called_once()

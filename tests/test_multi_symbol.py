@@ -14,10 +14,10 @@ from xauusd_bot.broker.account import AccountManager
 
 
 def test_config_multi_symbol_parsing():
-    os.environ["SYMBOLS"] = "XAUUSD, EURUSD"
+    os.environ["SYMBOLS"] = "XAUUSD, USTECH100M"
     tc = TradingConfig.from_env()
     assert "XAUUSD" in tc.symbols
-    assert "EURUSD" in tc.symbols
+    assert "USTECH100M" in tc.symbols
     assert tc.enable_session_filter is False
     assert tc.enable_sideways_filter is True
     del os.environ["SYMBOLS"]
@@ -42,20 +42,20 @@ def test_multi_symbol_position_sizing():
     )
     assert lot_gold == 0.10
 
-    # 2. EURUSD: Risk 20 pips (1.0850 - 1.0830 = 0.0020)
-    # tick_size = 0.00001 (1 point), tick_value = $1.0 (per 1.0 lot)
-    # 0.0020 / 0.00001 = 200 ticks * $1 = $200 risk per 1 lot.
+    # 2. USTECH100M: Risk 20 points (19500 - 19480 = 20.0 pts)
+    # tick_size = 0.1, point_value = 0.1 (per 1.0 lot)
+    # 20.0 / 0.1 = 200 ticks * $0.1 = $20 risk per 1 lot.
     # Risk budget = 1% of 10000 = $100.
-    # Expected lot = 100 / 200 = 0.50 lot
-    lot_eur = sizer.calculate_lot_size(
+    # Expected lot = 100 / 20 = 5.0 lots
+    lot_nas = sizer.calculate_lot_size(
         account=account,
-        entry_price=1.0850,
-        sl_price=1.0830,
+        entry_price=19500.0,
+        sl_price=19480.0,
         direction=TradeDirection.BUY,
-        point_value=1.0,
-        tick_size=0.00001,
+        point_value=0.1,
+        tick_size=0.1,
     )
-    assert lot_eur == 0.50
+    assert lot_nas == 5.0
 
 
 def test_cluster_manager_multi_symbol():
@@ -65,27 +65,27 @@ def test_cluster_manager_multi_symbol():
     leg_gold = TradeLeg(position_ticket=101, symbol="XAUUSD", lot_size=0.1, status=TradeStatus.OPEN)
     c_gold.legs.append(leg_gold)
 
-    c_eur = PyraCluster(signal_id="sig2", symbol="EURUSD", direction=TradeDirection.BUY)
-    leg_eur = TradeLeg(position_ticket=102, symbol="EURUSD", lot_size=0.5, status=TradeStatus.OPEN)
-    c_eur.legs.append(leg_eur)
+    c_nas = PyraCluster(signal_id="sig2", symbol="USTECH100M", direction=TradeDirection.BUY)
+    leg_nas = TradeLeg(position_ticket=102, symbol="USTECH100M", lot_size=0.5, status=TradeStatus.OPEN)
+    c_nas.legs.append(leg_nas)
 
     cm.add(c_gold)
-    cm.add(c_eur)
+    cm.add(c_nas)
 
     assert cm.has_active_for_direction(TradeDirection.BUY, symbol="XAUUSD")
-    assert cm.has_active_for_direction(TradeDirection.BUY, symbol="EURUSD")
+    assert cm.has_active_for_direction(TradeDirection.BUY, symbol="USTECH100M")
     assert not cm.has_active_for_direction(TradeDirection.SELL, symbol="XAUUSD")
 
     gold_clusters = cm.active_clusters_for_symbol("XAUUSD")
     assert len(gold_clusters) == 1
     assert gold_clusters[0].symbol == "XAUUSD"
 
-    eur_clusters = cm.active_clusters_for_symbol("EURUSD")
-    assert len(eur_clusters) == 1
-    assert eur_clusters[0].symbol == "EURUSD"
+    nas_clusters = cm.active_clusters_for_symbol("USTECH100M")
+    assert len(nas_clusters) == 1
+    assert nas_clusters[0].symbol == "USTECH100M"
 
     assert cm.total_open_lots("XAUUSD") == 0.1
-    assert cm.total_open_lots("EURUSD") == 0.5
+    assert cm.total_open_lots("USTECH100M") == 0.5
     assert cm.total_open_lots() == 0.6
 
 
@@ -104,8 +104,8 @@ def test_session_freedom_no_restrictions():
 
 
 def test_signal_symbol_support():
-    sig = Signal(symbol="EURUSD", direction=TradeDirection.BUY, grade=SignalGrade.A)
-    assert sig.symbol == "EURUSD"
+    sig = Signal(symbol="USTECH100M", direction=TradeDirection.BUY, grade=SignalGrade.A)
+    assert sig.symbol == "USTECH100M"
     assert sig.is_tradeable()
 
     # Blocked by sideways
@@ -114,42 +114,37 @@ def test_signal_symbol_support():
     assert not sig.is_tradeable()
 
 
-def test_eurusd_scalp_sequence_stop_calculation():
+def test_nas100_scalp_sequence_stop_calculation():
     from xauusd_bot.strategy.trigger import TriggerDetector
     from xauusd_bot.models import TimeframeData
 
     engine = TriggerDetector()
 
-    # Synthetic EURUSD data (price ~ 1.155)
+    # Synthetic Nasdaq 100 data (price ~ 19500)
     n = 30
     times = [1705300000 + i * 60 for i in range(n)]
-    # BSL at 1.15514, SSL at 1.15442
-    highs = [1.15500] * (n - 6) + [1.15520, 1.15510, 1.15505, 1.15500, 1.15495, 1.15490]
-    lows = [1.15450] * (n - 6) + [1.15480, 1.15490, 1.15480, 1.15470, 1.15460, 1.15450]
-    closes = [1.15480] * (n - 6) + [1.15515, 1.15500, 1.15490, 1.15480, 1.15470, 1.15460]
-    opens = [1.15470] * (n - 6) + [1.15490, 1.15515, 1.15500, 1.15490, 1.15480, 1.15470]
+    highs = [19510.0] * (n - 6) + [19515.0, 19512.0, 19510.0, 19508.0, 19506.0, 19504.0]
+    lows = [19490.0] * (n - 6) + [19495.0, 19496.0, 19494.0, 19492.0, 19490.0, 19488.0]
+    closes = [19500.0] * (n - 6) + [19514.0, 19510.0, 19508.0, 19505.0, 19502.0, 19500.0]
+    opens = [19495.0] * (n - 6) + [19498.0, 19514.0, 19510.0, 19508.0, 19505.0, 19502.0]
     volumes = [100.0] * n
 
     m1_data = TimeframeData("M1", times, opens, highs, lows, closes, volumes, [1.0] * n)
     m15_data = TimeframeData("M15", times, opens, highs, lows, closes, volumes, [1.0] * n)
 
-    # Even if caller erroneously passes point_value=1.0 or tick dollar value
     seq = engine.detect_xau_scalp_sequence(
         m15_data=m15_data,
         m1_data=m1_data,
-        m1_atr=0.00030,
-        point_value=1.0,  # Deliberately test defensive clamping
+        m1_atr=3.0,
+        point_value=0.1,
         stops_level_points=10.0,
-        target_r=1.6,
-        min_sl_distance=0.0,
+        target_r=2.0,
+        min_sl_distance=5.0,
     )
     if seq:
-        assert seq["entry_price"] < 10.0
-        assert seq["sl_price"] < 10.0
+        assert seq["entry_price"] > 10000.0
+        assert seq["sl_price"] > 10000.0
         assert seq["tp_price"] > 0.0
-        assert seq["sl_price"] > seq["entry_price"] if seq["direction"] == TradeDirection.SELL else seq["sl_price"] < seq["entry_price"]
-        # Stops distance must be in pips (e.g. < 0.01 = 100 pips), NEVER 20.0 points!
-        assert abs(seq["sl_price"] - seq["entry_price"]) < 0.01
 
 
 def test_pending_cluster_immune_to_manage_exits():
@@ -206,21 +201,16 @@ def test_broker_spec_stops_validation():
     entry = OrderEntry(conn, TradingConfig())
 
     # 1. Invalid Negative TP
-    ok, msg = entry.validate_broker_spec("EURUSD", 1.16000, 1.16200, tp_price=-30.85, direction=TradeDirection.SELL)
+    ok, msg = entry.validate_broker_spec("USTECH100M", 19500.0, 19550.0, tp_price=-30.85, direction=TradeDirection.SELL)
     assert not ok
     assert "Invalid TP price" in msg
 
     # 2. Invalid Stop side: SELL with SL below entry
-    ok, msg = entry.validate_broker_spec("EURUSD", 1.16000, 1.15500, tp_price=1.15000, direction=TradeDirection.SELL)
+    ok, msg = entry.validate_broker_spec("USTECH100M", 19500.0, 19450.0, tp_price=19400.0, direction=TradeDirection.SELL)
     assert not ok
     assert "Invalid SELL stop" in msg
 
-    # 3. Absurd Forex stop distance (e.g. 21.16 on a 1.16 currency pair)
-    ok, msg = entry.validate_broker_spec("EURUSD", 1.16000, 21.16000, tp_price=1.15000, direction=TradeDirection.SELL)
-    assert not ok
-    assert "abnormally large" in msg
-
-    # 4. Valid normal EURUSD order
-    ok, msg = entry.validate_broker_spec("EURUSD", 1.16000, 1.16200, tp_price=1.15600, direction=TradeDirection.SELL)
+    # 3. Valid normal USTECH100M order
+    ok, msg = entry.validate_broker_spec("USTECH100M", 19500.0, 19550.0, tp_price=19400.0, direction=TradeDirection.SELL)
     assert ok
 

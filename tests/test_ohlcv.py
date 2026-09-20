@@ -26,7 +26,7 @@ def test_multi_tf_init():
     conn = _make_connector()
     m = MultiTFData(conn)
     assert m.symbol == "XAUUSD"
-    assert all(m._data[tf] is None for tf in ["M1", "M5", "M15", "M30", "H1", "H4"])
+    assert all(m.get(tf) is None for tf in ["M1", "M5", "M15", "M30", "H1", "H4"])
 
 
 def test_update_all():

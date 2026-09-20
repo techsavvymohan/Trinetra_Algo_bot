@@ -87,6 +87,34 @@ def test_new_day_reset():
     assert abs(dt.loss_used_pct()) < 0.01
 
 
+def test_calibrate_from_broker():
+    class DummyDeal:
+        def __init__(self, entry, profit, swap=0.0, commission=0.0):
+            self.entry = entry
+            self.profit = profit
+            self.swap = swap
+            self.commission = commission
+
+    class DummyConnector:
+        def history_deals_get(self, from_d, to_d):
+            return [
+                DummyDeal(entry=0, profit=0.0),  # IN deal (opening)
+                DummyDeal(entry=1, profit=-50.0, commission=-2.0),  # OUT deal (closed loss)
+                DummyDeal(entry=1, profit=120.0, commission=-2.0),  # OUT deal (closed win)
+            ]
+
+    dt = DailyLossTracker(3.0, 1.0)
+    acc = AccountInfo(balance=9821.21, equity=9821.21)
+    dt.calibrate_from_broker(DummyConnector(), acc)
+
+    assert dt.state is not None
+    # Net today pnl = -52 + 118 = +66.0
+    # start_equity = 9821.21 - 66.0 = 9755.21
+    assert abs(dt.state.start_equity - 9755.21) < 0.01
+    assert dt.state.trades_today == 2
+    assert not dt.kill_switch_engaged()
+
+
 # ── MaxDDTracker ──
 
 def test_max_dd_no_drawdown():
@@ -170,7 +198,8 @@ def test_position_sizer_invalid_prices():
         account=acc, entry_price=0, sl_price=0,
         direction=TradeDirection.BUY, point_value=1.0, contract_size=100,
     )
-    assert lot >= 0.01
+    # BUG-09 FIX: invalid prices must BLOCK the trade (return 0.0), not silently return min_lot
+    assert lot == 0.0
 
 
 def test_calc_risk_amount():

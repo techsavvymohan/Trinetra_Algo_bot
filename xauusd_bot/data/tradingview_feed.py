@@ -2,11 +2,12 @@
 
 Uses the official tradingview-ta library to query live TradingView
 recommendations, oscillators, moving averages, and indicator metrics
-for XAUUSD, EURUSD, and other symbols.
+for XAUUSD, USTECH100M, and index symbols.
 """
 import logging
 import time
-from typing import Any, Dict, Optional, Tuple
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Tuple
 
 import threading
 import requests
@@ -35,9 +36,9 @@ log = logging.getLogger("xauusd_bot.data.tradingview")
 DEFAULT_EXCHANGE_MAP = {
     "XAUUSD": ("OANDA", "cfd"),
     "GOLD": ("OANDA", "cfd"),
-    "EURUSD": ("FX_IDC", "forex"),
-    "GBPUSD": ("FX_IDC", "forex"),
-    "USDJPY": ("FX_IDC", "forex"),
+    "USTECH100M": ("GLOBALPRIME", "cfd"),
+    "NAS100": ("GLOBALPRIME", "cfd"),
+    "US100": ("GLOBALPRIME", "cfd"),
 }
 
 
@@ -67,7 +68,7 @@ class TradingViewFeed:
 
     def _get_exchange_screener(self, symbol: str) -> Tuple[str, str]:
         sym = symbol.upper()
-        return DEFAULT_EXCHANGE_MAP.get(sym, ("FX_IDC", "forex"))
+        return DEFAULT_EXCHANGE_MAP.get(sym, ("OANDA", "cfd"))
 
     def get_analysis(self, symbol: str = "XAUUSD", tf: str = "M15") -> Optional[Any]:
         """Fetch analysis object from TradingView with caching."""
@@ -154,7 +155,8 @@ class LSEFeed:
     """
     def __init__(
         self,
-        api_key: str = "lse_live_31f53152fae3fd762294057c154f19b2",
+        # FIX: hardcoded default removed — API key MUST come from config (loaded via LSE_API_KEY in .env)
+        api_key: str = "",
         ws_url: str = "wss://data-ws.londonstrategicedge.com",
         http_url: str = "https://api.londonstrategicedge.com/vault",
         enabled: bool = True,
@@ -174,33 +176,28 @@ class LSEFeed:
         sym = symbol.upper().replace("/", "")
         if sym in ("XAUUSD", "GOLD"):
             return "XAU/USD"
-        elif sym == "EURUSD":
-            return "EUR/USD"
-        elif sym == "GBPUSD":
-            return "GBP/USD"
-        elif sym == "USDJPY":
-            return "USD/JPY"
-        elif sym in ("BTCUSD", "BTC"):
-            return "BTC/USD"
+        elif any(n in sym for n in ("USTECH", "NAS", "US100")):
+            return "NAS100"
         elif "/" in symbol:
             return symbol
-        return f"{sym[:3]}/{sym[3:]}" if len(sym) == 6 else symbol
+        return symbol
 
-    def start_stream(self, symbols: Optional[list[str]] = None, warmup_hours: float = 0.0):
+    def start_stream(self, symbols: Optional[List[str]] = None, warmup_hours: float = 0.0):
         """Start background daemon thread streaming live ticks over WebSocket.
 
         If warmup_hours > 0, replays historical ticks before continuing live.
         """
-        if not self.enabled or not self.api_key or self._running:
+        if not self.enabled or self._running:
+            return
+        if not self.api_key:
+            log.warning("LSE API key not configured (LSE_API_KEY). Stream disabled.")
             return
         if not LSE_AVAILABLE:
             log.warning("lse-data package not installed. LSE live stream disabled.")
             return
 
-        from datetime import datetime, timedelta, timezone
-
         if symbols is None:
-            symbols = ["XAU/USD", "EUR/USD"]
+            symbols = ["XAU/USD", "NAS100"]
         else:
             symbols = [self.normalize_symbol(s) for s in symbols]
 
@@ -213,7 +210,7 @@ class LSEFeed:
         self._thread.start()
         log.info("LSE WebSocket streaming thread started for %s (warmup: %s)", symbols, start_time or "live")
 
-    def _stream_loop(self, symbols: list[str], start_time: Optional[str] = None):
+    def _stream_loop(self, symbols: List[str], start_time: Optional[str] = None):
         """Internal worker looping over client.stream ticks with auto-reconnect."""
         while self._running:
             try:
@@ -237,8 +234,9 @@ class LSEFeed:
             except Exception as exc:
                 if not self._running:
                     break
-                log.warning("LSE WebSocket stream disconnected (%s); reconnecting in 3s...", exc)
-                time.sleep(3.0)
+                log.warning("LSE WebSocket stream disconnected (%s); reconnecting in 5s...", exc)
+                # Brief sleep before reconnect — avoids hammering server on repeated failures
+                time.sleep(5.0)
 
     def get_tick(self, symbol: str) -> Optional[dict]:
         """Get latest cached live tick for symbol."""
@@ -253,7 +251,7 @@ class LSEFeed:
             return round(tick["ask"] - tick["bid"], 5)
         return None
 
-    def fetch_candles(self, symbol: str, timeframe: str = "1m", start: str = "") -> list[dict]:
+    def fetch_candles(self, symbol: str, timeframe: str = "1m", start: str = "") -> List[dict]:
         """Fetch historical candles from LSE HTTP vault."""
         if not self.api_key:
             return []
@@ -277,7 +275,7 @@ class LSEFeed:
             log.error("LSE candles fetch failed: %s", exc)
         return []
 
-    def fetch_series(self, symbol: str = "US10Y", start: str = "") -> list[dict]:
+    def fetch_series(self, symbol: str = "US10Y", start: str = "") -> List[dict]:
         """Fetch macro economic/yield series (e.g. US10Y) from LSE HTTP vault."""
         if not self.api_key:
             return []
@@ -296,14 +294,20 @@ class LSEFeed:
         return []
 
     def get_us10y_yield(self) -> Optional[float]:
-        """Return the latest US 10-year Treasury yield value."""
-        series = self.fetch_series("US10Y", start="2026-01-01")
+        """Return the latest US 10-year Treasury yield value.
+
+        Uses a rolling 90-day lookback to ensure fresh data regardless of
+        current year — avoids the hardcoded 2026-01-01 date bug.
+        """
+        # FIX: was hardcoded to 2026-01-01 — now a rolling 90-day window
+        start_dt = (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%d")
+        series = self.fetch_series("US10Y", start=start_dt)
         if series:
             last = series[-1]
             return float(last.get("value", 0.0))
         return None
 
-    def fetch_cot(self, symbol: str = "GC") -> list[dict]:
+    def fetch_cot(self, symbol: str = "GC") -> List[dict]:
         """Fetch Commitments of Traders (COT) records from LSE vault."""
         if not self.api_key:
             return []
@@ -340,6 +344,5 @@ class LSEFeed:
         """Stop background WebSocket stream."""
         self._running = False
         if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=1.0)
+            self._thread.join(timeout=2.0)  # slightly longer join — 1s was too tight on slow teardowns
         log.info("LSE WebSocket feed stopped.")
-

@@ -89,6 +89,48 @@ def test_position_sizer_compounding_cap():
     assert lot_high == 0.10
 
 
+def test_position_sizer_auto_calibrates_baseline_and_scales_5x():
+    """PositionSizer auto-calibrates baseline capital to live broker balance and compounds up to 5x."""
+    sizer = PositionSizer(
+        initial_risk_pct=0.25,
+        max_pyramid_entries=4,
+        enable_profit_compounding=True,
+        initial_balance=0.0,
+        compounding_cap_mult=5.0,
+    )
+    # 1. On tick 1, broker balance is $20,000
+    acc_initial = AccountInfo(balance=20000.0, equity=20000.0)
+    lot_initial = sizer.calculate_lot_size(
+        account=acc_initial, entry_price=2000.0, sl_price=1995.0,
+        direction=TradeDirection.BUY, point_value=1.0, contract_size=100,
+        tick_size=0.01,
+    )
+    # Baseline locked to $20,000: risk = $20,000 * 0.0025 = $50.00 -> 50 / 500 = 0.10 lots
+    assert sizer.initial_balance == 20000.0
+    assert lot_initial == 0.10
+
+    # 2. Compounding growth to $40,000 equity (2x capital)
+    acc_growth = AccountInfo(balance=40000.0, equity=40000.0)
+    lot_growth = sizer.calculate_lot_size(
+        account=acc_growth, entry_price=2000.0, sl_price=1995.0,
+        direction=TradeDirection.BUY, point_value=1.0, contract_size=100,
+        tick_size=0.01,
+    )
+    # Risk = $40,000 * 0.0025 = $100.00 -> 100 / 500 = 0.20 lots
+    assert lot_growth == 0.20
+
+    # 3. Compounding growth to $120,000 equity (exceeds 5.0x cap of $100,000)
+    acc_huge = AccountInfo(balance=120000.0, equity=120000.0)
+    lot_huge = sizer.calculate_lot_size(
+        account=acc_huge, entry_price=2000.0, sl_price=1995.0,
+        direction=TradeDirection.BUY, point_value=1.0, contract_size=100,
+        tick_size=0.01,
+    )
+    # Cap at $20,000 * 5.0 = $100,000 -> Risk = $100,000 * 0.0025 = $250.00 -> 250 / 500 = 0.50 lots
+    assert lot_huge == 0.50
+
+
+
 def test_position_sizer_risk_scale():
     """risk_scale parameter scales risk directly (used by Net Dollar Beta Gate)."""
     sizer = PositionSizer(
@@ -119,18 +161,18 @@ def test_cluster_manager_net_dollar_beta_gate():
     cm = ClusterManager()
 
     # No clusters -> False
-    assert not cm.has_same_usd_exposure("EURUSD", TradeDirection.BUY)
+    assert not cm.has_same_usd_exposure("USTECH100M", TradeDirection.BUY)
 
     # Open XAUUSD BUY (Short USD)
     c1 = PyraCluster(direction=TradeDirection.BUY, status=TradeStatus.OPEN)
     c1.symbol = "XAUUSD"
     cm.add(c1)
 
-    # Proposed EURUSD BUY (Short USD) -> Same USD exposure! (Both short USD)
-    assert cm.has_same_usd_exposure("EURUSD", TradeDirection.BUY) is True
+    # Proposed USTECH100M BUY (Short USD) -> Same USD exposure! (Both short USD)
+    assert cm.has_same_usd_exposure("USTECH100M", TradeDirection.BUY) is True
 
-    # Proposed EURUSD SELL (Long USD) -> Opposite USD exposure! (Hedged)
-    assert cm.has_same_usd_exposure("EURUSD", TradeDirection.SELL) is False
+    # Proposed USTECH100M SELL (Long USD) -> Opposite USD exposure! (Hedged)
+    assert cm.has_same_usd_exposure("USTECH100M", TradeDirection.SELL) is False
 
     # Same symbol XAUUSD BUY -> Ignored (different symbol check)
     assert cm.has_same_usd_exposure("XAUUSD", TradeDirection.BUY) is False
@@ -149,7 +191,7 @@ def test_trade_manager_execute_with_risk_scale():
     order_entry = MagicMock()
     order_entry.place_limit_order.return_value = TradeLeg(
         position_ticket=2001, direction=TradeDirection.BUY,
-        entry_price=2000.0, lot_size=0.03, sl_price=1995.0, tp_price=2010.0,
+        entry_price=20000.0, lot_size=0.10, sl_price=19950.0, tp_price=20100.0,
         open_time=datetime(2026, 6, 1), status=TradeStatus.PENDING,
     )
 
@@ -165,22 +207,22 @@ def test_trade_manager_execute_with_risk_scale():
     tm.daily_loss.update(acc)
 
     sig = Signal(
-        symbol="EURUSD", direction=TradeDirection.BUY, grade=SignalGrade.A,
-        entry_price=1.0850, sl_price=1.0830, tp_price=1.0882,
+        symbol="USTECH100M", direction=TradeDirection.BUY, grade=SignalGrade.A,
+        entry_price=20000.0, sl_price=19950.0, tp_price=20100.0,
     )
 
     cluster = tm.execute_limit_signal(
-        signal=sig, limit_price=1.0850, account=acc,
-        point_value=1.0, contract_size=100000,
+        signal=sig, limit_price=20000.0, account=acc,
+        point_value=0.1, contract_size=1,
         min_lot=0.01, lot_step=0.01, max_lot=100.0,
         risk_scale=0.60,
     )
     assert cluster is not None
-    # Verify that signal lot size was reduced by risk_scale (0.60)
-    # EURUSD 20 pips = 200 ticks * $1 = $200/lot.
-    # Normal risk = $25 / $200 = 0.12 lots.
-    # With 0.60 risk_scale = $15 / $200 = 0.08 lots (or rounded).
-    assert sig.lot_size < 0.12
+    # 50 pts risk * $0.1 point_value * 1 contract = $5.00/lot.
+    # Normal risk = $25 / $5 = 5.0 lots.
+    # With 0.60 risk_scale = $15 / $5 = 3.0 lots.
+    assert sig.lot_size < 5.0
+    assert sig.lot_size == 3.0
 
 
 def test_config_profit_maximization_env_bindings(monkeypatch):
@@ -221,6 +263,7 @@ def test_split_tranche_exit_banks_cash_and_spawns_runner():
     from xauusd_bot.models import TimeframeData, ExitReason
 
     cfg = Config.load()
+    cfg.trading.xau_partial_close_enabled = False
     cfg.trading.enable_split_tranche_runner = True
     cfg.trading.runner_trail_atr_mult = 2.0
 

@@ -116,8 +116,8 @@ def test_news_non_usd_ignored():
     now = datetime.now(timezone.utc).timestamp()
     cal = EconomicCalendar()
     cal._events = [{
-        "title": "EUR CPI",
-        "currency": "EUR",
+        "title": "Foreign Economic Release",
+        "currency": "NON_USD",
         "impact": "high",
         "timestamp": now + 600,
     }]

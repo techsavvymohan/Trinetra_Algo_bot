@@ -1,7 +1,7 @@
 """TradingView Historical Data Importer.
 
-Fetches 1 month of historical multi-timeframe market data from TradingView
-using tvdatafeed for backtesting XAUUSD and EURUSD.
+Fetches historical multi-timeframe market data from TradingView
+using tvdatafeed for backtesting XAUUSD and USTECH100M.
 """
 import argparse
 import datetime
@@ -101,14 +101,12 @@ def fetch_lse_data(
     sym_clean = symbol.upper().replace("/", "")
     if sym_clean in ("XAUUSD", "GOLD"):
         lse_sym = "XAU/USD"
-    elif sym_clean == "EURUSD":
-        lse_sym = "EUR/USD"
-    elif sym_clean == "GBPUSD":
-        lse_sym = "GBP/USD"
+    elif any(n in sym_clean for n in ("USTECH", "NAS", "US100")):
+        lse_sym = "NAS100"
     elif "/" in symbol:
         lse_sym = symbol
     else:
-        lse_sym = f"{sym_clean[:3]}/{sym_clean[3:]}" if len(sym_clean) == 6 else symbol
+        lse_sym = symbol
 
     start_date = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
     tf_configs = [
@@ -290,7 +288,7 @@ def main():
     parser = argparse.ArgumentParser(description="Historical Data Importer (TradingView & LSE)")
     parser.add_argument("--source", type=str, default="lse", choices=["lse", "tradingview"],
                         help="Data source to fetch from: lse or tradingview")
-    parser.add_argument("--symbol", type=str, default="XAUUSD", help="Symbol to import (e.g. XAUUSD, EURUSD)")
+    parser.add_argument("--symbol", type=str, default="XAUUSD", help="Symbol to import (e.g. XAUUSD, USTECH100M)")
     parser.add_argument("--exchange", type=str, default=None, help="TradingView Exchange (e.g. OANDA, FX_IDC)")
     parser.add_argument("--days", type=int, default=30, help="Days of history to import (default: 30)")
     parser.add_argument("--api-key", type=str, default=os.getenv("LSE_API_KEY", "lse_live_31f53152fae3fd762294057c154f19b2"),

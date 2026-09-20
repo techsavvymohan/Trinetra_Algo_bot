@@ -248,7 +248,7 @@ def test_signal_reservation():
     # Concurrent in-flight order for same symbol fails
     assert res.reserve("sig_002", "XAUUSD") is False
     # Another symbol succeeds
-    assert res.reserve("sig_003", "EURUSD") is True
+    assert res.reserve("sig_003", "USTECH100M") is True
 
     # Releasing unlocks
     res.release("sig_001", "XAUUSD")

@@ -12,7 +12,7 @@ class PositionSizer:
         initial_risk_pct: float = 0.85,
         max_pyramid_entries: int = 4,
         enable_profit_compounding: bool = False,
-        initial_balance: float = 10000.0,
+        initial_balance: float = 0.0,
         compounding_cap_mult: float = 2.0,
     ):
         self.initial_risk_pct = initial_risk_pct
@@ -38,15 +38,16 @@ class PositionSizer:
         risk_scale: float = 1.0,
     ) -> float:
         if entry_price <= 0 or sl_price <= 0:
-            log.warning("Invalid prices: entry=%.2f sl=%.2f", entry_price, sl_price)
-            return min_lot
+            log.warning("Invalid prices: entry=%.5f sl=%.5f — blocking trade (refusing to return min_lot on bad data)", entry_price, sl_price)
+            # BUG-09 FIX: return 0 to BLOCK the trade, never return min_lot on invalid data
+            return 0.0
         if direction == TradeDirection.BUY:
             risk_points = entry_price - sl_price
         else:
             risk_points = sl_price - entry_price
         if risk_points <= 0:
-            log.warning("SL must be beyond entry for risk to exist")
-            return min_lot
+            log.warning("SL must be beyond entry for risk to exist: entry=%.5f sl=%.5f — blocking trade", entry_price, sl_price)
+            return 0.0
 
         if tick_size > 0:
             risk_per_unit = (risk_points / tick_size) * point_value
@@ -60,13 +61,18 @@ class PositionSizer:
             self.initial_balance = account.balance
             log.info("PositionSizer dynamically auto-calibrated baseline to account balance: $%.2f", self.initial_balance)
 
-        if self.enable_profit_compounding and self.initial_balance > 0:
+        if self.enable_profit_compounding:
+            curr_equity = getattr(account, "equity", 0.0)
+            if curr_equity <= 0:
+                curr_equity = getattr(account, "balance", 0.0)
             # House Money Compounding: Anchor base risk to initial_balance in drawdown, compound when ahead
-            eff_equity = max(account.equity, self.initial_balance)
-            eff_equity = min(eff_equity, self.initial_balance * self.compounding_cap_mult)
+            eff_equity = max(curr_equity, self.initial_balance) if self.initial_balance > 0 else curr_equity
+            if self.compounding_cap_mult > 0 and self.initial_balance > 0:
+                eff_equity = min(eff_equity, self.initial_balance * self.compounding_cap_mult)
             account_risk_amount = eff_equity * (self.initial_risk_pct / 100.0)
         else:
-            account_risk_amount = account.equity * (self.initial_risk_pct / 100.0)
+            curr_cap = getattr(account, "equity", 0.0) or getattr(account, "balance", 0.0)
+            account_risk_amount = curr_cap * (self.initial_risk_pct / 100.0)
 
         if risk_scale > 0 and risk_scale != 1.0:
             account_risk_amount *= risk_scale

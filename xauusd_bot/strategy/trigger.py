@@ -35,17 +35,28 @@ class TriggerDetector:
             return False, f"sell fail: price={c[-1]:.2f} ema={e:.2f} rsi={r:.1f}"
 
     def check_micro_structure_break(self, data: TimeframeData, direction: TradeDirection,
-                                    lookback: int = 3) -> Tuple[bool, float]:
+                                    lookback: int = 3, confirm_closed: bool = False) -> Tuple[bool, float]:
         c = data.high if direction == TradeDirection.BUY else data.low
+        closes = data.close
         if len(c) < lookback + 2:
             return False, 0.0
-        recent = c[-(lookback + 1):-1]
-        current = c[-1]
-        if direction == TradeDirection.BUY and current > max(recent):
-            return True, current
-        if direction == TradeDirection.SELL and current < min(recent):
-            return True, current
-        return False, current
+        if confirm_closed and len(closes) >= lookback + 2:
+            # Require close of candle [-2] to exceed prior swing extreme to eliminate wick fakeouts
+            recent = c[-(lookback + 2):-2]
+            eval_price = closes[-2]
+            if direction == TradeDirection.BUY and eval_price > max(recent):
+                return True, eval_price
+            if direction == TradeDirection.SELL and eval_price < min(recent):
+                return True, eval_price
+            return False, eval_price
+        else:
+            recent = c[-(lookback + 1):-1]
+            current = c[-1]
+            if direction == TradeDirection.BUY and current > max(recent):
+                return True, current
+            if direction == TradeDirection.SELL and current < min(recent):
+                return True, current
+            return False, current
 
     def check_zone_entry(self, price: float, zone: Optional[Tuple[float, float]],
                          direction: TradeDirection) -> Tuple[bool, str]:
@@ -232,6 +243,30 @@ class TriggerDetector:
             return True, TradeDirection.SELL, bsl, f"Bearish BSL sweep: high {curr_h:.2f} > {bsl:.2f}, close {curr_c:.2f} < {bsl:.2f}"
 
         return False, None, 0.0, "no sweep detected"
+
+    def check_l2_order_book_imbalance(
+        self,
+        snapshot: Optional[object],
+        direction: TradeDirection,
+        min_obi: float = 0.15,
+    ) -> Tuple[bool, str]:
+        """Check Level-2 Order Book Imbalance (OBI) alignment with trade direction.
+
+        - BUY: OBI >= +min_obi (resting bids outweigh asks)
+        - SELL: OBI <= -min_obi (resting asks outweigh bids)
+        - If snapshot is None or DOM inactive: Gracefully returns True (fallback to tick delta).
+        """
+        if snapshot is None or not getattr(snapshot, "is_dom_active", False):
+            return True, "DOM inactive — fallback to tick delta"
+        obi = getattr(snapshot, "obi", 0.0)
+        if direction == TradeDirection.BUY:
+            if obi >= min_obi:
+                return True, f"L2 OBI confirmed Bullish: {obi:+.2f} >= +{min_obi:.2f}"
+            return False, f"L2 OBI unaligned for Buy: {obi:+.2f} < +{min_obi:.2f}"
+        else:
+            if obi <= -min_obi:
+                return True, f"L2 OBI confirmed Bearish: {obi:+.2f} <= -{min_obi:.2f}"
+            return False, f"L2 OBI unaligned for Sell: {obi:+.2f} > -{min_obi:.2f}"
 
     def check_m1_displacement(
         self,
@@ -460,10 +495,7 @@ class TriggerDetector:
             return None
 
         curr_c = c1[-1]
-        is_forex = (curr_c < 10.0) or (point_value < 0.001)
-        if is_forex and point_value >= 0.01:
-            point_value = 0.00001
-        digits = 5 if is_forex else 2
+        digits = 1 if curr_c > 5000 else 2
         sl_buffer = stops_level_points * point_value
 
         # -------------------------------------------------------------
@@ -521,7 +553,7 @@ class TriggerDetector:
                                     risk = entry_price - structural_sl
                                     effective_min_sl = min_sl_distance
                                     if entry_price > 1000:
-                                        effective_min_sl = max(effective_min_sl, entry_price * 0.0016, m1_atr * 1.5)
+                                        effective_min_sl = max(effective_min_sl, m1_atr * 2.0 if m1_atr > 0 else 5.0)
                                     elif entry_price < 10.0 and effective_min_sl > 0.1:
                                         effective_min_sl = 0.0
                                     if effective_min_sl > 0 and risk < effective_min_sl:
@@ -607,7 +639,7 @@ class TriggerDetector:
                                     risk = structural_sl - entry_price
                                     effective_min_sl = min_sl_distance
                                     if entry_price > 1000:
-                                        effective_min_sl = max(effective_min_sl, entry_price * 0.0016, m1_atr * 1.5)
+                                        effective_min_sl = max(effective_min_sl, m1_atr * 2.0 if m1_atr > 0 else 5.0)
                                     elif entry_price < 10.0 and effective_min_sl > 0.1:
                                         effective_min_sl = 0.0
                                     if effective_min_sl > 0 and risk < effective_min_sl:
@@ -776,5 +808,34 @@ class TriggerDetector:
         return None
 
 
+def evaluate_h4_macro_bias(
+    h4_data: Optional[TimeframeData],
+    direction: TradeDirection,
+    ema_fast: int = 9,
+    ema_slow: int = 50,
+) -> Tuple[bool, str]:
+    """Evaluate H4 macro trend bias against candidate trade direction.
 
+    Returns:
+        (veto: bool, reason: str)
+        - veto=True if counter-trend (e.g. SELL during Bullish H4 trend, or BUY during Bearish H4 trend).
+        - veto=False and reason="aligned" if signal aligns with macro H4 momentum.
+    """
+    if h4_data is None or len(h4_data.close) < ema_slow + 5:
+        return False, "insufficient_h4_data"
 
+    ef = ema(h4_data.close, ema_fast)
+    es = ema(h4_data.close, ema_slow)
+    if ef is None or es is None:
+        return False, "ema_calc_failed"
+
+    if ef > es:
+        if direction == TradeDirection.SELL:
+            return True, f"BULLISH H4 vetos SELL (H4 EMA{ema_fast}={ef:.2f} > EMA{ema_slow}={es:.2f})"
+        return False, "aligned"
+    elif ef < es:
+        if direction == TradeDirection.BUY:
+            return True, f"BEARISH H4 vetos BUY (H4 EMA{ema_fast}={ef:.2f} < EMA{ema_slow}={es:.2f})"
+        return False, "aligned"
+
+    return False, "neutral"

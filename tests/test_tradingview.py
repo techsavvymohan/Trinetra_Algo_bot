@@ -24,7 +24,7 @@ def test_tv_get_bias():
         assert feed.get_bias("XAUUSD", "M15") == Bias.BULLISH
 
     with patch.object(feed, "get_recommendation", return_value="SELL"):
-        assert feed.get_bias("EURUSD", "M15") == Bias.BEARISH
+        assert feed.get_bias("USTECH100M", "M15") == Bias.BEARISH
 
     with patch.object(feed, "get_recommendation", return_value="NEUTRAL"):
         assert feed.get_bias("XAUUSD", "M15") == Bias.NEUTRAL
@@ -86,10 +86,9 @@ from xauusd_bot.data.tradingview_feed import LSEFeed
 def test_lse_feed_normalize_symbol():
     assert LSEFeed.normalize_symbol("XAUUSD") == "XAU/USD"
     assert LSEFeed.normalize_symbol("GOLD") == "XAU/USD"
-    assert LSEFeed.normalize_symbol("EURUSD") == "EUR/USD"
-    assert LSEFeed.normalize_symbol("GBPUSD") == "GBP/USD"
-    assert LSEFeed.normalize_symbol("BTCUSD") == "BTC/USD"
-    assert LSEFeed.normalize_symbol("EUR/USD") == "EUR/USD"
+    assert LSEFeed.normalize_symbol("USTECH100M") == "NAS100"
+    assert LSEFeed.normalize_symbol("NAS100") == "NAS100"
+    assert LSEFeed.normalize_symbol("US100") == "NAS100"
 
 
 def test_lse_feed_get_tick_and_spread():
@@ -112,7 +111,8 @@ def test_lse_feed_get_tick_and_spread():
 
 
 def test_lse_feed_fetch_candles_and_series():
-    feed = LSEFeed(enabled=True)
+    # Supply a dummy api_key — the real key must come from .env (LSE_API_KEY)
+    feed = LSEFeed(api_key="test_key", enabled=True)
 
     mock_resp_candles = MagicMock()
     mock_resp_candles.status_code = 200
@@ -136,7 +136,8 @@ def test_lse_feed_fetch_candles_and_series():
 
 
 def test_lse_feed_cot_bias():
-    feed = LSEFeed(enabled=True)
+    # Supply a dummy api_key — the real key must come from .env (LSE_API_KEY)
+    feed = LSEFeed(api_key="test_key", enabled=True)
 
     mock_resp = MagicMock()
     mock_resp.status_code = 200

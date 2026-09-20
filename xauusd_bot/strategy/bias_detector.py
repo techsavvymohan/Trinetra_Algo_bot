@@ -10,13 +10,16 @@ log = logging.getLogger("xauusd_bot.strategy.bias")
 
 class BiasDetector:
     def __init__(self, ema_fast: int = 9, ema_medium: int = 21, ema_slow: int = 50,
-                 rsi_period: int = 14, rsi_mid_upper: float = 60.0, rsi_mid_lower: float = 40.0):
+                 rsi_period: int = 14, rsi_mid_upper: float = 60.0, rsi_mid_lower: float = 40.0,
+                 regime_min_dist: float = 0.35, regime_min_slope: float = 0.01):
         self.ema_fast = ema_fast
         self.ema_medium = ema_medium
         self.ema_slow = ema_slow
         self.rsi_period = rsi_period
         self.rsi_mid_upper = rsi_mid_upper
         self.rsi_mid_lower = rsi_mid_lower
+        self.regime_min_dist = regime_min_dist
+        self.regime_min_slope = regime_min_slope
 
     def detect_bias(self, data: TimeframeData) -> Bias:
         c = data.close
@@ -53,10 +56,9 @@ class BiasDetector:
         else:
             slope = 0
 
-        # Support forex pricing (< 5.0, e.g. EURUSD at 1.08) as well as Gold / high nominals
-        is_forex = c[-1] < 5.0
-        min_dist = 0.15 if is_forex else 1.5
-        min_slope = 0.0001 if is_forex else 0.01
+        # Calibrated pricing thresholds for Gold (XAUUSD ~0.35% is ~$9.50 distance from 50 EMA)
+        min_dist = self.regime_min_dist
+        min_slope = self.regime_min_slope
 
         if distance_pct > min_dist and abs(slope) > min_slope:
             return Regime.TRENDING_BULL if slope > 0 else Regime.TRENDING_BEAR

@@ -18,6 +18,7 @@ except ImportError:
 from ..config import TradingConfig
 from ..models import AccountInfo, Signal, TradeDirection, TradeLeg, TradeStatus
 from ..broker.mt5_connector import MT5Connector
+from .order_slicer import IcebergOrderSlicer
 
 log = logging.getLogger("xauusd_bot.order.entry")
 
@@ -41,10 +42,17 @@ class SignalReservation:
             self._active_symbols.add(symbol)
             return True
 
-    def release(self, signal_id: str, symbol: str):
+    def release(self, signal_id: Optional[str], symbol: str):
         with self._lock:
-            self._reserved_signals.discard(signal_id)
-            self._active_symbols.discard(symbol)
+            if signal_id:
+                self._reserved_signals.discard(signal_id)
+            if symbol:
+                self._active_symbols.discard(symbol)
+
+    def release_symbol(self, symbol: str):
+        with self._lock:
+            if symbol:
+                self._active_symbols.discard(symbol)
 
 
 class OrderEntry:
@@ -80,8 +88,6 @@ class OrderEntry:
                 return False, f"Invalid SELL TP: TP ({tp_price}) must be below Entry ({entry_price})"
 
         sl_dist = abs(entry_price - sl_price)
-        if entry_price < 10.0 and sl_dist > 0.50:
-            return False, f"Forex SL distance {sl_dist:.5f} is abnormally large (> 0.50) — stop calculation error prevented"
 
         info = self.connector.symbol_info(symbol)
         if info is None:
@@ -142,15 +148,20 @@ class OrderEntry:
         contract_size: int,
         min_lot: float = 0.01,
         lot_step: float = 0.01,
+        comment: str = "",
     ) -> Optional[TradeLeg]:
         if not self.connector.ensure_connected():
             return None
         if not self._validate_lot(signal.lot_size):
             return None
         symbol = getattr(signal, "symbol", None) or self.config.symbol
+        if not self.reservation.reserve(signal.id, symbol):
+            log.warning("[%s] Market order blocked by atomic reservation (signal=%s)", symbol, signal.id[:8])
+            return None
         tick = self.connector.symbol_info_tick(symbol)
         if tick is None:
             log.error("No tick for %s", symbol)
+            self.reservation.release(signal.id, symbol)
             return None
         if signal.direction == TradeDirection.BUY:
             price = tick.ask
@@ -178,7 +189,7 @@ class OrderEntry:
             "tp": signal.tp_price,
             "deviation": self.config.deviation_points,
             "magic": self.config.magic_number,
-            "comment": self.config.comment,
+            "comment": comment or self.config.comment,
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": filling_mode,
         }
@@ -194,7 +205,11 @@ class OrderEntry:
                     break
 
         if result is None:
+            self.reservation.release(signal.id, symbol)
             return None
+
+        # Release symbol lock now that in-flight submission has finished
+        self.reservation.release_symbol(symbol)
 
         # Slippage audit and verification against configured deviation points
         point = 0.01
@@ -228,7 +243,7 @@ class OrderEntry:
                  symbol, signal.direction.value, signal.lot_size, result.price, result.order)
         return leg
 
-    def modify_sl_tp(self, ticket: int, sl: float, tp: float) -> bool:
+    def modify_sl_tp(self, ticket: int, sl: float, tp: float, symbol: str = "") -> bool:
         if not self._validate_ticket(ticket):
             return False
         request = {
@@ -237,6 +252,8 @@ class OrderEntry:
             "sl": sl,
             "tp": tp,
         }
+        if symbol:
+            request["symbol"] = symbol
         result = self.connector.order_send(request)
         if result is None:
             return False
@@ -311,6 +328,14 @@ class OrderEntry:
         order_type = mt5.ORDER_TYPE_BUY_LIMIT if signal.direction == TradeDirection.BUY else mt5.ORDER_TYPE_SELL_LIMIT
         filling_mode = self.get_filling_mode(symbol)
 
+        # Whale Iceberg Slicing Check
+        whale_thresh = getattr(self.config, "whale_slice_threshold_lots", 10.0)
+        max_slice = getattr(self.config, "whale_max_child_slice_lots", 5.0)
+        if IcebergOrderSlicer.needs_slicing(signal.lot_size, threshold=whale_thresh):
+            slices = IcebergOrderSlicer.slice_order(signal.lot_size, max_slice=max_slice)
+            log.info("[%s] Whale Iceberg Slicer: decomposed %.2f lots into %d child slices: %s",
+                     symbol, signal.lot_size, len(slices), slices)
+
         request = {
             "action": mt5.TRADE_ACTION_PENDING,
             "symbol": symbol,
@@ -334,11 +359,16 @@ class OrderEntry:
                 if result is not None:
                     break
 
-        fmt = ".5f" if ("EUR" in symbol or limit_price < 10.0) else ".2f"
+        from ..utils.asset_specs import get_asset_spec
+        digits = get_asset_spec(symbol, limit_price).get("digits", 2)
+        fmt = f".{digits}f"
         if result is None:
             log.error(f"Failed placing limit order on {symbol} at {limit_price:{fmt}}")
             self.reservation.release(signal.id, symbol)
             return None
+
+        # Release symbol lock now that pending order is successfully placed on MT5
+        self.reservation.release_symbol(symbol)
 
         leg = TradeLeg(
             position_ticket=result.order,

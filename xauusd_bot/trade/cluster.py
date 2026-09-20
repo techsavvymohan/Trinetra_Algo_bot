@@ -21,6 +21,10 @@ class ClusterManager:
     def add(self, cluster: PyraCluster):
         self._clusters.append(cluster)
 
+    def remove(self, cluster: PyraCluster):
+        if cluster in self._clusters:
+            self._clusters.remove(cluster)
+
     def get(self, cluster_id: str) -> Optional[PyraCluster]:
         for c in self._clusters:
             if c.cluster_id == cluster_id:
@@ -42,7 +46,7 @@ class ClusterManager:
 
     def has_same_usd_exposure(self, symbol: str, direction: TradeDirection) -> bool:
         """Check if any currently OPEN cluster on another symbol shares the same USD directional exposure.
-        For pairs quoted against USD (e.g. XAUUSD, EURUSD, GBPUSD):
+        For pairs quoted against USD (e.g. XAUUSD, USTECH100M / NAS100):
         BUY = Short USD, SELL = Long USD.
         """
         for c in self.active:

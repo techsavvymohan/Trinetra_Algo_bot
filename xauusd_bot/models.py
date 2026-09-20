@@ -26,6 +26,7 @@ class Session(Enum):
 
 
 class SignalGrade(Enum):
+    A_PLUS = "A+"
     A = "A"
     B = "B"
     C = "C"
@@ -55,6 +56,7 @@ class ExitReason(Enum):
     STRUCTURAL_INVALIDATION = "structural_invalidation"
     BREAKEVEN = "breakeven"
     STAGNATION = "stagnation"
+    WEEKEND_CLOSE = "weekend_close"
 
 
 @dataclass
@@ -137,7 +139,7 @@ class Signal:
         return any([self.news_blocked, self.spread_blocked, self.session_blocked, self.equity_blocked, self.sideways_blocked])
 
     def is_tradeable(self) -> bool:
-        return not self.blocked() and self.grade in (SignalGrade.A, SignalGrade.B)
+        return not self.blocked() and self.grade in (SignalGrade.A_PLUS, SignalGrade.A, SignalGrade.B)
 
 
 @dataclass
@@ -173,6 +175,12 @@ class PyraCluster:
     entry_tf: str = ""
     fvg_low: float = 0.0
     fvg_high: float = 0.0
+    limit_price: float = 0.0
+    target_tp: float = 0.0
+    retest_touched: bool = False
+    partial_tp1_hit: bool = False
+    partial_tp2_hit: bool = False
+    signal: Optional[object] = None
     open_time: Optional[datetime] = None
     status: TradeStatus = TradeStatus.OPEN
 
@@ -252,6 +260,7 @@ class DailyState:
 
 @dataclass
 class AccountInfo:
+    login: int = 0
     balance: float = 0.0
     equity: float = 0.0
     margin: float = 0.0

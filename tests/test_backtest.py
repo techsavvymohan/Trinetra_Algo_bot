@@ -370,3 +370,34 @@ def test_backtest_xau_liquidity_sweep_fvg_m1_execution():
     assert "sweeps_detected" in res["ablation"]
     assert "orders_placed" in res["ablation"]
     assert "orders_filled" in res["ablation"]
+
+
+def test_backtest_broker_friction_and_breakeven_parity():
+    """Verify that backtest engine applies commission friction and uses unified breakeven."""
+    cfg = _make_config()
+    cfg.trading.backtest_apply_friction = True
+    cfg.trading.backtest_commission_per_lot = 6.0
+    engine = BacktestEngine(cfg)
+
+    # 1. Check unified breakeven buffer
+    assert cfg.trading.get_breakeven_trigger_r("XAUUSD") == 1.50
+    assert cfg.trading.get_breakeven_buffer_r("XAUUSD") == 0.10
+    assert cfg.trading.get_breakeven_trigger_r("USTECH100M") == 1.50
+    assert cfg.trading.get_breakeven_buffer_r("USTECH100M") == 0.10
+
+    # 2. Check commission deduction on closed trade
+    _utc = lambda: datetime.now(timezone.utc).replace(tzinfo=None)
+    cluster = PyraCluster(signal_id="fric1", direction=TradeDirection.BUY, entry_tf="M1",
+                          open_time=_utc(), status=TradeStatus.CLOSED, symbol="XAUUSD")
+    # Entry 2000, Exit 2010, Lot 1.0 -> Gross PnL = (10 / 0.01) * 1.0 * 1.0 = $1000.00
+    # Commission on 1.0 lot @ $6/lot = $6.00 -> Net PnL = $994.00
+    leg = TradeLeg(direction=TradeDirection.BUY, entry_price=2000.0, lot_size=1.0,
+                   sl_price=1990.0, status=TradeStatus.CLOSED, exit_price=2010.0, exit_reason="tp",
+                   symbol="XAUUSD")
+    cluster.legs.append(leg)
+    engine._clusters.append(cluster)
+
+    r = engine._report()
+    assert r["total_trades"] == 1
+    assert leg.pnl == 994.00
+    assert r["total_pnl"] == 994.00

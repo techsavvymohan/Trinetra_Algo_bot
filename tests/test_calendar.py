@@ -59,7 +59,7 @@ def test_is_blocked_far_away():
 def test_is_blocked_non_usd_ignored():
     cal = EconomicCalendar()
     now = datetime.now(timezone.utc).timestamp()
-    cal._events = [{"title": "EUR CPI", "currency": "EUR", "impact": "high", "timestamp": now + 60}]
+    cal._events = [{"title": "Foreign Economic Release", "currency": "NON_USD", "impact": "high", "timestamp": now + 60}]
     ok, _ = cal.is_blocked(before_minutes=30, after_minutes=30)
     assert not ok
 
