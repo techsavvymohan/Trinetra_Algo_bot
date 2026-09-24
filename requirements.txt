@@ -7,6 +7,8 @@ numpy>=1.24.0
 
 # Environment & Configuration
 python-dotenv>=1.0.0
+pydantic>=2.7.0
+pydantic-settings>=2.2.0
 
 # Network & Market Data APIs
 requests>=2.28.0
