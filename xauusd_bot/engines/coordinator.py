@@ -119,6 +119,8 @@ class MultiEngineCoordinator:
             if resolved != sym:
                 engine = self.engines.pop(sym)
                 engine.symbol = resolved
+                if hasattr(engine, "data_feed") and engine.data_feed:
+                    engine.data_feed.symbol = resolved
                 self.engines[resolved] = engine
                 log.info("🎯 Auto-Resolved Engine Symbol: '%s' -> '%s'", sym, resolved)
             self.connector.symbol_select(resolved, True)
