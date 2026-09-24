@@ -1,5 +1,5 @@
 # ==============================================================================
-# MatchingProp Algo Bot - 1-Click Automated Setup for Fresh Windows VPS
+# TRINETRA Algo Bot - 1-Click Automated Setup for Fresh Windows VPS
 # Installs: Git, Python 3.11, Clones Repository, Creates Venv, Installs Requirements, Sets .env
 # ==============================================================================
 
@@ -8,7 +8,7 @@
 $ErrorActionPreference = "Continue"
 
 Write-Host "`n=================================================================" -ForegroundColor Cyan
-Write-Host "  MatchingProp Algo Bot - VPS 1-Click Environment Installer" -ForegroundColor Cyan
+Write-Host "  TRINETRA Algo Bot - VPS 1-Click Environment Installer" -ForegroundColor Cyan
 Write-Host "=================================================================`n" -ForegroundColor Cyan
 
 $webClient = New-Object System.Net.WebClient
@@ -61,10 +61,10 @@ if ($pyCheck) {
 }
 
 # 3. Clone Repository
-Write-Host "`n[3/6] Cloning MatchingProp repository..." -ForegroundColor Yellow
-$targetDir = "$HOME\Downloads\MatchingProp_algo_bot"
+Write-Host "`n[3/6] Cloning TRINETRA Algo Bot repository..." -ForegroundColor Yellow
+$targetDir = "$HOME\Downloads\Trinetra_Algo_bot"
 if (-not (Test-Path $targetDir)) {
-    git clone https://github.com/techsavvymohan/MatchingProp_algo_bot.git $targetDir
+    git clone https://github.com/techsavvymohan/Trinetra_Algo_bot.git $targetDir
 } else {
     Write-Host "  -> Directory exists. Pulling latest code..." -ForegroundColor White
     git -C $targetDir pull origin main

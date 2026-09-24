@@ -277,7 +277,7 @@ def check_symbols(mt5, cfg, account):
 
 
 def main():
-    print(f"\n{BOLD}MatchingProp Algo Bot -- VPS System Readiness Inspection{RESET}")
+    print(f"\n{BOLD}TRINETRA Algo Bot -- VPS System Readiness Inspection{RESET}")
     print(f"Working Directory: {BASE_DIR}")
     
     check_git_status()
