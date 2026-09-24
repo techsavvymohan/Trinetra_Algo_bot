@@ -61,3 +61,7 @@ data/trade_log.csv
 *~
 .DS_Store
 Thumbs.db
+
+# Temporary deployment and scratch files
+scratch/
+*.zip
