@@ -503,7 +503,7 @@ class TradingConfig:
     def from_env(cls) -> "TradingConfig":
         raw_symbols = os.getenv("SYMBOLS", "")
         if raw_symbols:
-            symbols = [s.strip().upper() for s in raw_symbols.split(",") if s.strip()]
+            symbols = [s.strip() for s in raw_symbols.split(",") if s.strip()]
         else:
             env_sym = os.getenv("SYMBOL", "")
             if env_sym and env_sym != "XAUUSD":

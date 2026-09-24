@@ -152,20 +152,26 @@ class MT5Connector:
                 mt5.symbol_select(sym_clean, True)
                 return info.name
 
-            # 2. Determine asset family / root aliases
-            if "XAU" in sym_upper or "GOLD" in sym_upper:
-                roots = ["XAUUSD", "GOLD"]
-            elif any(idx in sym_upper for idx in ["USTEC", "NAS", "US100", "TECH"]):
-                roots = ["USTECH100M", "NAS100", "US100", "USTECH", "NASDAQ"]
-            else:
-                root_cand = re.sub(r"[._+].*$", "", sym_upper)
-                roots = [root_cand] if root_cand else [sym_upper]
-
-            # 3. Retrieve all available symbols from the broker
+            # 2. Retrieve all available symbols from the broker
             all_syms = mt5.symbols_get() or []
             tradeable = [s for s in all_syms if getattr(s, "trade_mode", 1) != trade_disabled]
             if not tradeable:
                 tradeable = all_syms
+
+            # Case-insensitive direct match (e.g. US100CASH -> US100Cash)
+            for s in tradeable:
+                if s.name.upper() == sym_upper:
+                    mt5.symbol_select(s.name, True)
+                    return s.name
+
+            # 3. Determine asset family / root aliases
+            if "XAU" in sym_upper or "GOLD" in sym_upper:
+                roots = ["XAUUSD", "GOLD"]
+            elif any(idx in sym_upper for idx in ["USTEC", "NAS", "US100", "TECH"]):
+                roots = ["US100CASH", "US100", "USTECH100M", "NAS100", "USTECH", "NASDAQ"]
+            else:
+                root_cand = re.sub(r"[._+].*$", "", sym_upper)
+                roots = [root_cand] if root_cand else [sym_upper]
 
             # Priority A: Exact match with root alias
             for root in roots:

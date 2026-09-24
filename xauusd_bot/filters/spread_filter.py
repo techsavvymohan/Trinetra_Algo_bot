@@ -23,3 +23,7 @@ class SpreadFilter:
 
     def spike_blocked(self) -> bool:
         return self.tracker.is_spike(self.max_multiplier)
+
+    def is_spread_acceptable(self) -> bool:
+        ok, _ = self.check()
+        return ok

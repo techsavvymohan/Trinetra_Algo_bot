@@ -375,7 +375,12 @@ class BaseSymbolEngine(ABC):
         self.sync_positions(now_utc, current_price, active_clusters, pending_clusters, pos_tickets)
 
         # Filters: Spread, News, Session
-        spread_ok = self.spread_filter.is_spread_acceptable()
+        if hasattr(self.spread_filter, "is_spread_acceptable"):
+            spread_ok = self.spread_filter.is_spread_acceptable()
+        elif hasattr(self.spread_filter, "check"):
+            spread_ok, _ = self.spread_filter.check()
+        else:
+            spread_ok = True
         news_ok, _ = self.news_filter.check(self.symbol)
         session_active = self.is_session_active(now_utc)
 
