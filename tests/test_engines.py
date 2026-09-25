@@ -165,7 +165,7 @@ def test_nas100_engine_sessions_and_guards(base_components):
     )
 
     assert engine.asset_name == "Nasdaq 100 (NAS100 / USTECH100M)"
-    assert engine.get_risk_per_trade() == 0.025  # 2.5% default
+    assert engine.get_risk_per_trade() == 0.02  # 2.0% default
 
     # US Cash Open (14:00 UTC -> active)
     dt_us_open = datetime(2026, 7, 15, 14, 0, tzinfo=timezone.utc)

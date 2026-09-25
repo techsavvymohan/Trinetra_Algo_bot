@@ -82,6 +82,12 @@ class PositionSizer:
         if remaining_budget > 0:
             account_risk_amount = min(account_risk_amount, remaining_budget)
 
+        # Citadel Hard Dollar Risk Governor:
+        # Protects against runaway compounding lot sizes during flash crashes / drawdowns
+        base_bal = self.initial_balance if self.initial_balance > 0 else (getattr(account, "balance", 0.0) or 10000.0)
+        hard_dollar_ceiling = max(100.0, base_bal * 0.025)  # Strict 2.5% max dollar risk ceiling per trade
+        account_risk_amount = min(account_risk_amount, hard_dollar_ceiling)
+
         raw_lots = account_risk_amount / risk_per_unit
         raw_lots = max(raw_lots, min_lot)
         raw_lots = min(raw_lots, max_lot)

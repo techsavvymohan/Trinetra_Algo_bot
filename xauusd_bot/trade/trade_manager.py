@@ -99,6 +99,9 @@ class TradeManager:
         cluster.symbol = getattr(signal, "symbol", "XAUUSD")
         cluster.fvg_low = getattr(signal, "fvg_low", 0.0)
         cluster.fvg_high = getattr(signal, "fvg_high", 0.0)
+        cluster.is_chop = getattr(signal, "is_chop", False)
+        cluster.dynamic_t1_pct = getattr(signal, "dynamic_t1_pct", 25.0)
+        cluster.dynamic_t1_r = getattr(signal, "dynamic_t1_r", 1.50)
         cluster.highest_price = leg.entry_price
         cluster.lowest_price = leg.entry_price
         cluster.legs.append(leg)
@@ -173,6 +176,9 @@ class TradeManager:
         cluster.symbol = getattr(signal, "symbol", "XAUUSD")
         cluster.fvg_low = getattr(signal, "fvg_low", 0.0)
         cluster.fvg_high = getattr(signal, "fvg_high", 0.0)
+        cluster.is_chop = getattr(signal, "is_chop", False)
+        cluster.dynamic_t1_pct = getattr(signal, "dynamic_t1_pct", 25.0)
+        cluster.dynamic_t1_r = getattr(signal, "dynamic_t1_r", 1.50)
         cluster.highest_price = limit_price
         cluster.lowest_price = limit_price
         cluster.legs.append(leg)
@@ -232,6 +238,9 @@ class TradeManager:
         cluster.symbol = getattr(signal, "symbol", "XAUUSD")
         cluster.fvg_low = getattr(signal, "fvg_low", 0.0)
         cluster.fvg_high = getattr(signal, "fvg_high", 0.0)
+        cluster.is_chop = getattr(signal, "is_chop", False)
+        cluster.dynamic_t1_pct = getattr(signal, "dynamic_t1_pct", 25.0)
+        cluster.dynamic_t1_r = getattr(signal, "dynamic_t1_r", 1.50)
         cluster.highest_price = limit_price
         cluster.lowest_price = limit_price
         cluster.collective_sl = signal.sl_price
@@ -441,7 +450,9 @@ class TradeManager:
         if not isinstance(pc_enabled, bool):
             pc_enabled = True
         if self.partial_close and pc_enabled and self.partial_close.check_partial_tp(cluster, current_price):
-            raw_pct = getattr(cfg_obj, "partial_tp_tranche1_pct", None)
+            raw_pct = getattr(cluster, "dynamic_t1_pct", None)
+            if not isinstance(raw_pct, (int, float)):
+                raw_pct = getattr(cfg_obj, "partial_tp_tranche1_pct", None)
             if not isinstance(raw_pct, (int, float)):
                 raw_pct = getattr(self.partial_close, "close_pct", 25.0)
             if not isinstance(raw_pct, (int, float)):

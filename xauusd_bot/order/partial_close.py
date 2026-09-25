@@ -44,10 +44,11 @@ class PartialCloseManager:
         else:
             move_r = (avg_entry - current_price) / r_dist
 
-        target_r = self.take_profit_r
+        target_r = cluster.dynamic_t1_r if getattr(cluster, "dynamic_t1_r", None) is not None else self.take_profit_r
+        effective_close_pct = cluster.dynamic_t1_pct if getattr(cluster, "dynamic_t1_pct", None) is not None else self.close_pct
         if self.enable_capital_adapter:
             tot_vol = sum(getattr(l, "lot_size", 0.0) for l in cluster.legs if l.status == TradeStatus.OPEN)
-            plan = CapitalAdapter.adapt_tranches(tot_vol, base_t1_pct=self.close_pct, base_t1_r=self.take_profit_r)
+            plan = CapitalAdapter.adapt_tranches(tot_vol, base_t1_pct=effective_close_pct, base_t1_r=target_r)
             target_r = plan.be_trigger_r
 
         if move_r >= target_r:

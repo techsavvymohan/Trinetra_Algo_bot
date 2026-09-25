@@ -52,6 +52,8 @@ data/*.db
 data/*.db-shm
 data/*.db-wal
 data/trade_log.csv
+data/full_2026_*.json
+data/fetched_sep21_*.json
 
 # IDE / OS specific files
 .idea/

@@ -498,6 +498,22 @@ class TriggerDetector:
         digits = 1 if curr_c > 5000 else 2
         sl_buffer = stops_level_points * point_value
 
+        # Dynamic Stop-Hunt ATR Volatility Buffer (absorbs liquidity sweep wicks)
+        atr_pad = max(sl_buffer, (m1_atr * 1.8) if m1_atr > 0 else (3.5 if curr_c > 5000 else 0.8))
+
+        # Dynamic Regime Classification (M15 ADX & Choppiness Index)
+        is_chop = False
+        if m15_data and len(m15_data.close) >= 20:
+            from ..indicators.quant_indicators import choppiness_index, adx
+            c_val = choppiness_index(m15_data.high, m15_data.low, m15_data.close, 14)
+            a_val = adx(m15_data.high, m15_data.low, m15_data.close, 14)
+            if a_val is not None and a_val >= 25.0:
+                is_chop = False
+            elif c_val is not None and c_val >= 50.0:
+                is_chop = True
+            elif a_val is not None and a_val < 22.0:
+                is_chop = True
+
         # -------------------------------------------------------------
         # Long Sequence: Sweep of SSL -> Reclaim -> Bullish Displacement -> Bullish MSS -> Bullish FVG
         # -------------------------------------------------------------
@@ -549,7 +565,7 @@ class TriggerDetector:
                                         telemetry["fvg_created"] = telemetry.get("fvg_created", 0) + 1
                                     fvg_low, fvg_high = fvg
                                     entry_price = fvg_high
-                                    structural_sl = min(sweep_low, min(l1[sweep_idx:])) - sl_buffer
+                                    structural_sl = min(sweep_low, min(l1[sweep_idx:])) - atr_pad
                                     risk = entry_price - structural_sl
                                     effective_min_sl = min_sl_distance
                                     if entry_price > 1000:
@@ -586,6 +602,9 @@ class TriggerDetector:
                                             "risk_distance": round(risk, digits),
                                             "target_r": target_r,
                                             "atr": round(m1_atr, 4 if digits == 2 else 6),
+                                            "is_chop": is_chop,
+                                            "dynamic_t1_pct": 50.0 if is_chop else 25.0,
+                                            "dynamic_t1_r": 1.20 if is_chop else 1.50,
                                         }
 
         # -------------------------------------------------------------
@@ -635,7 +654,7 @@ class TriggerDetector:
                                         telemetry["fvg_created"] = telemetry.get("fvg_created", 0) + 1
                                     fvg_low, fvg_high = fvg
                                     entry_price = fvg_low
-                                    structural_sl = max(sweep_high, max(h1[sweep_idx:])) + sl_buffer
+                                    structural_sl = max(sweep_high, max(h1[sweep_idx:])) + atr_pad
                                     risk = structural_sl - entry_price
                                     effective_min_sl = min_sl_distance
                                     if entry_price > 1000:
@@ -672,6 +691,9 @@ class TriggerDetector:
                                             "risk_distance": round(risk, digits),
                                             "target_r": target_r,
                                             "atr": round(m1_atr, 4 if digits == 2 else 6),
+                                            "is_chop": is_chop,
+                                            "dynamic_t1_pct": 50.0 if is_chop else 25.0,
+                                            "dynamic_t1_r": 1.20 if is_chop else 1.50,
                                         }
 
         return None

@@ -431,6 +431,9 @@ class BacktestEngine:
                                 symbol=sig.symbol, collective_sl=po["sl_price"],
                                 open_time=current_time, status=TradeStatus.OPEN,
                                 signal=sig,
+                                is_chop=getattr(sig, "is_chop", False),
+                                dynamic_t1_pct=getattr(sig, "dynamic_t1_pct", 25.0),
+                                dynamic_t1_r=getattr(sig, "dynamic_t1_r", 1.50),
                             )
                             leg = TradeLeg(
                                 direction=sig.direction, entry_price=actual_entry_price, lot_size=po["lot_size"],
@@ -613,6 +616,9 @@ class BacktestEngine:
                                     signal_id=signal.id, direction=signal.direction, entry_tf="M1",
                                     symbol=signal.symbol, collective_sl=signal.sl_price,
                                     open_time=current_time, status=TradeStatus.OPEN,
+                                    is_chop=getattr(signal, "is_chop", False),
+                                    dynamic_t1_pct=getattr(signal, "dynamic_t1_pct", 25.0),
+                                    dynamic_t1_r=getattr(signal, "dynamic_t1_r", 1.50),
                                 )
                                 leg = TradeLeg(
                                     direction=signal.direction, entry_price=signal.entry_price, lot_size=lot,
@@ -1172,6 +1178,9 @@ class BacktestEngine:
         if is_fvg and seq:
             signal.fvg_low = seq.get("fvg_low", 0.0)
             signal.fvg_high = seq.get("fvg_high", 0.0)
+            signal.is_chop = seq.get("is_chop", False)
+            signal.dynamic_t1_pct = seq.get("dynamic_t1_pct", 25.0)
+            signal.dynamic_t1_r = seq.get("dynamic_t1_r", 1.50)
         if not is_fvg:
             signal.grade = self.scorer.grade(signal)
 
@@ -1320,7 +1329,7 @@ class BacktestEngine:
         # 3. Partial TP check (guarded by xau_partial_close_enabled)
         if getattr(self.cfg.trading, "xau_partial_close_enabled", False) and self.partial_close.check_partial_tp(cluster, price):
             new_closed_legs = []
-            close_pct = (getattr(self.partial_close, "close_pct", getattr(self.cfg.trading, "partial_tp_tranche1_pct", 25.0))) / 100.0
+            close_pct = (getattr(cluster, "dynamic_t1_pct", getattr(self.partial_close, "close_pct", getattr(self.cfg.trading, "partial_tp_tranche1_pct", 25.0)))) / 100.0
             for leg in cluster.legs:
                 if leg.status == TradeStatus.OPEN:
                     part_lot = round(leg.lot_size * close_pct, 2)

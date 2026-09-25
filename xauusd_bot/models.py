@@ -134,6 +134,9 @@ class Signal:
     parent_signal_id: Optional[str] = None
     risk_verdict: Optional["RiskVerdict"] = None
     research_plan: Optional["ResearchPlan"] = None
+    is_chop: bool = False
+    dynamic_t1_pct: Optional[float] = None
+    dynamic_t1_r: Optional[float] = None
 
     def blocked(self) -> bool:
         return any([self.news_blocked, self.spread_blocked, self.session_blocked, self.equity_blocked, self.sideways_blocked])
@@ -183,6 +186,9 @@ class PyraCluster:
     signal: Optional[object] = None
     open_time: Optional[datetime] = None
     status: TradeStatus = TradeStatus.OPEN
+    is_chop: bool = False
+    dynamic_t1_pct: Optional[float] = None
+    dynamic_t1_r: Optional[float] = None
 
     def r_distance(self) -> float:
         """Return the initial risk distance (1R).

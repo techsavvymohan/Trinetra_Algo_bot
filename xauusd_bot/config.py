@@ -200,17 +200,18 @@ class TradingConfig:
     xau_overlap_risk_per_trade: float = 0.0065
 
     # Nasdaq 100 (USTECH100M / NAS100) Dedicated Parameters (Antifragile Plateau)
-    nas_risk_per_trade: float = 0.025
+    nas_risk_per_trade: float = 0.02
     nas_target_r: float = 2.0
-    nas_breakeven_trigger_r: float = 1.25  # Centered on 1.20R - 1.30R robust plateau
+    nas_breakeven_trigger_r: float = 1.50  # Unified 1.50R breakeven trigger
     nas_breakeven_buffer_r: float = 0.10
     nas_max_holding_bars: int = 0
-    nas_session_start_hour: int = 15   # 15:45 UTC (US Afternoon Continuation Killzone)
-    nas_session_start_minute: int = 45
-    nas_killzone_morning_start_min: int = 45
-    nas_london_close_pause_start_hour: int = 24  # No pause needed after 15:45
-    nas_london_close_pause_end_min: int = 45
-    nas_session_end_hour: int = 20    # 20:00 UTC (US Cash Close)
+    nas_session_start_hour: int = 13   # 13:30 UTC (US Cash Open Opening Drive)
+    nas_session_start_minute: int = 30
+    nas_session_end_hour: int = 16    # 16:30 UTC (US Opening Drive Cutoff)
+    nas_session_end_minute: int = 30
+    nas_killzone_morning_start_min: int = 30
+    nas_london_close_pause_start_hour: int = 24  # No pause needed
+    nas_london_close_pause_end_min: int = 0
     nas_require_retest: bool = True
     nas_retest_max_bars: int = 15     # 15 M1 bars limit order patience for Nasdaq
     nas_require_h1_trend: bool = True
@@ -283,21 +284,24 @@ class TradingConfig:
     xau_london_require_h1_trend: bool = True
     xau_london_protect_profits: bool = True
 
-
     def is_in_nas_session(self, current_time) -> bool:
-        """Evaluate whether current UTC time is within Nasdaq 100 active US cash session.
-        Focuses on pristine US afternoon continuation (15:45 - 20:00 UTC).
+        """Evaluate whether current UTC time is within Nasdaq 100 active US cash open session.
+        Focuses on peak institutional Opening Drive (13:30 - 16:30 UTC / 9:30 AM - 12:30 PM NY).
+        Filters out low-volume lunchtime chop and afternoon manipulation wicks.
         """
         if current_time is None:
             return True
         h_utc = current_time.hour if hasattr(current_time, "hour") else 0
         m_utc = current_time.minute if hasattr(current_time, "minute") else 0
-        start_h = getattr(self, "nas_session_start_hour", 15)
-        start_m = getattr(self, "nas_killzone_morning_start_min", 45)
-        end_h = getattr(self, "nas_session_end_hour", 20)
-        if h_utc < start_h or h_utc >= end_h:
+        start_h = getattr(self, "nas_session_start_hour", 13)
+        start_m = getattr(self, "nas_session_start_minute", 30)
+        end_h = getattr(self, "nas_session_end_hour", 16)
+        end_m = getattr(self, "nas_session_end_minute", 30)
+        if h_utc < start_h or h_utc > end_h:
             return False
         if h_utc == start_h and m_utc < start_m:
+            return False
+        if h_utc == end_h and m_utc > end_m:
             return False
         return True
 
@@ -305,8 +309,8 @@ class TradingConfig:
         from .utils.asset_specs import get_asset_spec
         spec = get_asset_spec(symbol)
         if spec["is_index"]:
-            return getattr(self, "nas_risk_per_trade", 0.025)
-        return getattr(self, "xau_risk_per_trade", getattr(self, "pyramid_initial_risk_pct", 3.5) / 100.0)
+            return getattr(self, "nas_risk_per_trade", 0.02)
+        return getattr(self, "xau_risk_per_trade", 0.02)
 
     def get_conviction_scale(self, signal_or_grade, is_tuesday: bool = False, is_friday: bool = False) -> float:
         """Calculate dynamic bet sizing factor (Fractional Kelly) without dropping trades."""

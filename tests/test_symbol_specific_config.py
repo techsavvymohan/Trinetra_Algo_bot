@@ -14,10 +14,10 @@ def test_symbol_specific_defaults():
     assert tc.get_target_r("USTECH100M") == 2.0
     assert tc.get_breakeven_trigger_r("USTECH100M") == 1.5
     assert tc.get_max_holding_bars("USTECH100M") == 0
-    assert tc.get_risk_per_trade("USTECH100M") == 0.025
+    assert tc.get_risk_per_trade("USTECH100M") == 0.02
     assert tc.nas_session_start_hour == 13
     assert tc.nas_session_start_minute == 30
-    assert tc.nas_session_end_hour == 20
+    assert tc.nas_session_end_hour == 16
 
 def test_symbol_specific_case_insensitivity():
     tc = TradingConfig()
@@ -26,7 +26,7 @@ def test_symbol_specific_case_insensitivity():
     assert tc.get_target_r("xauusd") == 2.0
     assert tc.get_max_holding_bars("nas100") == 0
     assert tc.get_max_holding_bars("xauusd") == 0
-    assert tc.get_risk_per_trade("ustech100m") == 0.025
+    assert tc.get_risk_per_trade("ustech100m") == 0.02
 
 def test_symbol_specific_env_overrides(monkeypatch):
     monkeypatch.setenv("NAS_TARGET_R", "1.8")
@@ -55,7 +55,7 @@ def test_symbol_specific_env_overrides(monkeypatch):
 def test_symbol_specific_min_sl_distance():
     tc = TradingConfig()
     assert tc.get_min_sl_distance("XAUUSD") == 5.0
-    assert tc.get_min_sl_distance("USTECH100M") == 5.0
+    assert tc.get_min_sl_distance("USTECH100M") == 10.0
 
 def test_symbol_specific_min_sl_distance_env_overrides(monkeypatch):
     monkeypatch.setenv("XAU_MIN_SL_DISTANCE", "6.5")
