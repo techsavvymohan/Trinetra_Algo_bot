@@ -117,7 +117,7 @@ def test_optimal_config_defaults():
 
     # 2. Nasdaq 100 active US cash session configuration
     assert getattr(tc, "nas_session_start_hour", None) == 13
-    assert getattr(tc, "nas_session_end_hour", None) == 20
+    assert getattr(tc, "nas_session_end_hour", None) == 16
 
     # 3. FRIDAY_WEEKEND_GUARD = True (auto-flat Friday 20:45 UTC)
     assert getattr(tc, "friday_weekend_guard", None) is True

@@ -1129,11 +1129,10 @@ class BacktestEngine:
         if is_fvg:
             if is_index:
                 # Tiered Conviction Grading for Nasdaq:
-                # Grade A+ (Unicorn Index Setup: 2.40x) vs Grade A (Normal: 1.00x)
+                # Grade A+ (Unicorn Index Setup: 1.50x) vs Grade A (Normal: 1.00x)
                 h1_b = hierarchy_result.get("h1_bias", Bias.NEUTRAL)
                 h1_val = h1_b.value if isinstance(h1_b, Bias) else str(h1_b)
-                h_utc = current_time.hour if current_time is not None else 0
-                in_prime_nas = (h_utc == 14) or (16 <= h_utc <= 19)
+                in_prime_nas = self.cfg.trading.is_in_nas_session(current_time)
                 trend_ok = (h1_val == "bullish" and direction == TradeDirection.BUY) or (h1_val == "bearish" and direction == TradeDirection.SELL)
                 sl_dist_ok = (abs(entry_price - sl) >= getattr(self.cfg.trading, "nas_min_sl_distance", 10.0))
                 if in_prime_nas and trend_ok and sl_dist_ok:
@@ -1141,13 +1140,13 @@ class BacktestEngine:
                 else:
                     grade = SignalGrade.A
             else:
-                # Tiered Conviction Grading for Gold: Grade A+ (Unicorn: 2.60x) vs Grade A (Normal: 1.00x)
+                # Tiered Conviction Grading for Gold: Grade A+ (Unicorn: 1.50x) vs Grade A (Normal: 1.00x)
                 h1_b = hierarchy_result.get("h1_bias", Bias.NEUTRAL)
                 h1_val = h1_b.value if isinstance(h1_b, Bias) else str(h1_b)
                 h_utc = current_time.hour if current_time is not None else 0
 
                 in_ny_core_window = (13 <= h_utc <= 15) if getattr(self.cfg.trading, "xau_a_plus_ny_core_only", True) else True
-                not_bullish_trap = (h1_val != "bullish") if getattr(self.cfg.trading, "xau_a_plus_block_h1_bullish", True) else True
+                not_bullish_trap = (h1_val != "bullish") if getattr(self.cfg.trading, "xau_a_plus_block_h1_bullish", False) else True
                 sl_dist_ok = (abs(entry_price - sl) >= getattr(self.cfg.trading, "xau_a_plus_min_sl_dist", 0.0))
 
                 if in_ny_core_window and not_bullish_trap and sl_dist_ok:

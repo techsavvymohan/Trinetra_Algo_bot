@@ -359,13 +359,13 @@ class XauusdEngine(BaseSymbolEngine):
                 h1_bias_val = "bullish" if ema9[-1] > ema21[-1] else "bearish"
 
         in_ny_core_window = in_ny_core if getattr(tc, "xau_a_plus_ny_core_only", True) else True
-        not_bullish_trap = (h1_bias_val != "bullish") if getattr(tc, "xau_a_plus_block_h1_bullish", True) else True
+        not_bullish_trap = (h1_bias_val != "bullish") if getattr(tc, "xau_a_plus_block_h1_bullish", False) else True
         sl_dist_ok = (abs(seq["entry_price"] - seq["sl_price"]) >= getattr(tc, "xau_a_plus_min_sl_dist", 0.0))
 
         if in_ny_core_window and not_bullish_trap and sl_dist_ok:
             sig.grade = SignalGrade.A_PLUS
             sig.setup_type = f"SWEEP_FVG_A_PLUS_{sess_name}"
-            log.info("[%s] 🦄 UNICORN SETUP: Grade A+ Conviction Active (Scale=%.2fx)", self.symbol, getattr(tc, "conviction_scale_a_plus", 2.60))
+            log.info("[%s] 🦄 UNICORN SETUP: Grade A+ Conviction Active (Scale=%.2fx)", self.symbol, getattr(tc, "conviction_scale_a_plus", 1.50))
         else:
             sig.grade = SignalGrade.A
             sig.setup_type = f"SWEEP_FVG_A_{sess_name}"

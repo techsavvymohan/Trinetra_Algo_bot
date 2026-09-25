@@ -197,10 +197,8 @@ class Nas100Engine(BaseSymbolEngine):
         log.info(f"[{self.symbol}] Swept: {seq['sweep_direction']} at {seq['swept_level']:.1f} | MSS={seq['mss_level']:.1f} | FVG=[{seq['fvg_low']:.1f}, {seq['fvg_high']:.1f}], Entry={seq['entry_price']:.1f}, SL={seq['sl_price']:.1f}, TP={seq['tp_price']:.1f}")
 
         # Tiered Conviction Grading for Nasdaq:
-        # Grade A+ (Unicorn Index Setup: 2.40x) vs Grade A (Normal: 1.00x)
-        h_utc = now_utc.hour
-        m_utc = now_utc.minute
-        in_prime_nas = (16 <= h_utc <= 19) or (h_utc == 15 and m_utc >= 45)
+        # Grade A+ (Unicorn Index Setup: 1.50x) vs Grade A (Normal: 1.00x)
+        in_prime_nas = tc.is_in_nas_session(now_utc)
         trend_ok = (trend_bias == seq["direction"]) if trend_bias is not None else False
         sl_dist_ok = (abs(seq["entry_price"] - seq["sl_price"]) >= getattr(tc, "nas_min_sl_distance", 10.0))
         grade = SignalGrade.A_PLUS if (in_prime_nas and trend_ok and sl_dist_ok) else SignalGrade.A

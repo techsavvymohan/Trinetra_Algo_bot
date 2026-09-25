@@ -92,19 +92,20 @@ class TradingConfig:
 
     # Dynamic Conviction-Weighted Bet Sizing (Institutional Kelly Factor)
     enable_conviction_sizing: bool = True
-    conviction_scale_a_plus: float = 2.60
+    conviction_scale_a_plus: float = 1.50
     conviction_scale_a: float = 1.00
     conviction_scale_b: float = 1.00
     conviction_scale_c: float = 0.60
 
     # Grade A+ (Unicorn) Criteria Configuration
     xau_a_plus_ny_core_only: bool = True       # Grade A+ requires NY Core session (13:00 - 15:00 UTC)
-    xau_a_plus_block_h1_bullish: bool = True   # Filter out H1 bullish fatigue traps from A+
+    xau_a_plus_block_h1_bullish: bool = False  # Natural SMC trend-following (allow A+ in genuine bullish trend)
     xau_a_plus_min_sl_dist: float = 0.0        # Optional minimum SL distance for A+
 
-    # Tuesday Compression Microstructure Guard (Blueprint Chapter 5.1)
-    tuesday_reduced_risk: bool = True
-    tuesday_risk_scale: float = 0.43
+    # Tuesday Compression Microstructure Guard
+    tuesday_reduced_risk: bool = False
+    tuesday_risk_scale: float = 1.00
+    tuesday_trade_enabled: bool = True
     tuesday_breakeven_trigger_r: float = 1.40
 
     # Universal Capital Adapter & Whale Iceberg Slicing
@@ -217,7 +218,7 @@ class TradingConfig:
     nas_require_h1_trend: bool = True
     nas_stagnation_bars: int = 40     # Centered on 35 - 45 bar plateau
     nas_max_consecutive_losses_day: int = 2  # Circuit breaker against FOMC/whipsaw days
-    conviction_scale_nas_a_plus: float = 2.40
+    conviction_scale_nas_a_plus: float = 1.50
     xau_min_sl_distance: float = 5.0  # Minimum $5.00 SL breathing room floor for Gold
     nas_min_sl_distance: float = 10.0  # Minimum 10.0 pts SL breathing room floor for Nasdaq 100
 
@@ -261,12 +262,6 @@ class TradingConfig:
     friday_close_cutoff_hour: int = 20
     friday_close_cutoff_min: int = 45
 
-    # Day-of-Week Risk & Session Optimizations
-    friday_skip_ny_session: bool = True
-    tuesday_reduced_risk: bool = True
-    tuesday_risk_scale: float = 0.43
-    tuesday_trade_enabled: bool = True
-
     # Guard 5 (XAU): Intra-Session Consecutive-Loss Cooldown
     # After xau_consec_loss_max consecutive SL hits in the same day,
     # pause XAU entries for the rest of that trading day.
@@ -282,7 +277,7 @@ class TradingConfig:
 
     # London Session Structural Optimization & Profit Protection
     xau_london_require_h1_trend: bool = True
-    xau_london_protect_profits: bool = True
+    xau_london_protect_profits: bool = False
 
     def is_in_nas_session(self, current_time) -> bool:
         """Evaluate whether current UTC time is within Nasdaq 100 active US cash open session.
@@ -335,7 +330,7 @@ class TradingConfig:
 
             if spec["is_index"]:
                 if grade == SignalGrade.A_PLUS:
-                    scale = getattr(self, "conviction_scale_nas_a_plus", 2.40)
+                    scale = getattr(self, "conviction_scale_nas_a_plus", 1.50)
                 elif grade == SignalGrade.A:
                     scale = getattr(self, "conviction_scale_a", 1.00)
                 elif grade == SignalGrade.B:
@@ -344,7 +339,7 @@ class TradingConfig:
                     scale = getattr(self, "conviction_scale_c", 0.60)
             else:
                 if grade == SignalGrade.A_PLUS:
-                    scale = getattr(self, "conviction_scale_a_plus", 2.60)
+                    scale = getattr(self, "conviction_scale_a_plus", 1.50)
                 elif grade == SignalGrade.A:
                     scale = getattr(self, "conviction_scale_a", 1.00)
                 elif grade == SignalGrade.B:
@@ -352,9 +347,9 @@ class TradingConfig:
                 else:
                     scale = getattr(self, "conviction_scale_c", 0.60)
 
-        if is_tuesday:
-            scale *= getattr(self, "tuesday_risk_scale", 0.43)
-        if is_friday and not spec.get("is_index", False):
+        if is_tuesday and getattr(self, "tuesday_reduced_risk", False):
+            scale *= getattr(self, "tuesday_risk_scale", 1.00)
+        if is_friday and not spec.get("is_index", False) and getattr(self, "xau_friday_trade_enabled", True):
             scale *= getattr(self, "xau_friday_risk_scale", 0.50)
         return scale
 
