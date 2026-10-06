@@ -10,6 +10,28 @@ HIGH_IMPACT_CURRENCIES = {"USD"}
 XAU_KEYWORDS = ("gold", "xau", "precious metals")
 FOREX_FACTORY_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 
+TIER1_HIGH_IMPACT_KEYWORDS = (
+    "cpi",
+    "consumer price",
+    "non-farm",
+    "nonfarm",
+    "payroll",
+    "unemployment rate",
+    "fomc",
+    "interest rate",
+    "fed rate",
+    "federal funds",
+    "powell",
+    "fed chair",
+    "gdp",
+    "gross domestic",
+    "pce",
+    "ism manufacturing",
+    "ism services",
+    "retail sales",
+    "ppi",
+)
+
 
 @dataclass
 class CalendarEvent:
@@ -111,10 +133,12 @@ class EconomicCalendar:
                             dt = datetime.fromisoformat(dt_str)
                         except Exception:
                             continue
+                        evt_title = row.get("event", "Economic Event")
+                        is_tier1 = any(kw in evt_title.lower() for kw in TIER1_HIGH_IMPACT_KEYWORDS)
                         events.append(CalendarEvent(
-                            title=row.get("event", "Economic Event"),
+                            title=evt_title,
                             currency=row.get("region_code", "USD"),
-                            impact="high",
+                            impact="high" if is_tier1 else "low",
                             date=dt_str,
                             timestamp=dt.timestamp(),
                         ))

@@ -90,10 +90,12 @@ class XauusdEngine(BaseSymbolEngine):
         if getattr(tc, "xau_strict_killzones", True):
             lon_start_h = getattr(tc, "xau_london_start_hour", 8)
             lon_start_m = getattr(tc, "xau_london_start_minute", 0)
-            in_london = (h_utc > lon_start_h or (h_utc == lon_start_h and m_utc >= lon_start_m)) and (h_utc < 10 or (h_utc == 10 and m_utc <= 30))
+            lon_end_h = getattr(tc, "xau_london_end_hour", 12)
+            lon_end_m = getattr(tc, "xau_london_end_minute", 0)
+            in_london = (h_utc > lon_start_h or (h_utc == lon_start_h and m_utc >= lon_start_m)) and (h_utc < lon_end_h or (h_utc == lon_end_h and m_utc <= lon_end_m))
 
-            ny_end_h = getattr(tc, "xau_london_close_cutoff_hour", 14)
-            ny_end_m = getattr(tc, "xau_london_close_cutoff_min", 45)
+            ny_end_h = getattr(tc, "xau_london_close_cutoff_hour", 16)
+            ny_end_m = getattr(tc, "xau_london_close_cutoff_min", 30)
             in_ny_core = (13 < h_utc < ny_end_h) or (h_utc == 13 and m_utc >= 30) or (h_utc == ny_end_h and m_utc <= ny_end_m)
 
             if getattr(tc, "friday_skip_ny_session", True) and now_utc.weekday() == 4:
@@ -132,10 +134,12 @@ class XauusdEngine(BaseSymbolEngine):
         # Max trades per session
         lon_start_h = getattr(tc, "xau_london_start_hour", 8)
         lon_start_m = getattr(tc, "xau_london_start_minute", 0)
-        in_london = (h_utc > lon_start_h or (h_utc == lon_start_h and m_utc >= lon_start_m)) and (h_utc < 10 or (h_utc == 10 and m_utc <= 30))
+        lon_end_h = getattr(tc, "xau_london_end_hour", 12)
+        lon_end_m = getattr(tc, "xau_london_end_minute", 0)
+        in_london = (h_utc > lon_start_h or (h_utc == lon_start_h and m_utc >= lon_start_m)) and (h_utc < lon_end_h or (h_utc == lon_end_h and m_utc <= lon_end_m))
 
-        ny_end_h = getattr(tc, "xau_london_close_cutoff_hour", 14)
-        ny_end_m = getattr(tc, "xau_london_close_cutoff_min", 45)
+        ny_end_h = getattr(tc, "xau_london_close_cutoff_hour", 16)
+        ny_end_m = getattr(tc, "xau_london_close_cutoff_min", 30)
         in_ny_core = (13 < h_utc < ny_end_h) or (h_utc == 13 and m_utc >= 30) or (h_utc == ny_end_h and m_utc <= ny_end_m)
 
         max_sess_trades = getattr(tc, "xau_max_trades_per_session", 2)
@@ -266,8 +270,13 @@ class XauusdEngine(BaseSymbolEngine):
 
         h_utc = now_utc.hour
         m_utc = now_utc.minute
-        in_london = (h_utc == 7 and m_utc >= 45) or (8 <= h_utc < 10) or (h_utc == 10 and m_utc <= 30)
-        in_ny_core = (13 < h_utc < 16) or (h_utc == 13 and m_utc >= 30) or (h_utc == 16 and m_utc <= 30)
+        lon_end_h = getattr(tc, "xau_london_end_hour", 12)
+        lon_end_m = getattr(tc, "xau_london_end_minute", 0)
+        in_london = (h_utc == 7 and m_utc >= 45) or (8 <= h_utc < lon_end_h) or (h_utc == lon_end_h and m_utc <= lon_end_m)
+
+        ny_end_h = getattr(tc, "xau_london_close_cutoff_hour", 16)
+        ny_end_m = getattr(tc, "xau_london_close_cutoff_min", 30)
+        in_ny_core = (13 < h_utc < ny_end_h) or (h_utc == 13 and m_utc >= 30) or (h_utc == ny_end_h and m_utc <= ny_end_m)
 
         if in_ny_core:
             disp_atr = vr.min_atr_mult
@@ -288,13 +297,12 @@ class XauusdEngine(BaseSymbolEngine):
             early_london = (h_utc == 7 and m_utc >= 45) or (h_utc == 8 and m_utc <= 30)
             if early_london or req_h1:
                 h1_data = data_all.get("H1")
-                if h1_data and hasattr(self.trigger, "evaluate_h4_macro_bias"):
+                if h1_data and len(h1_data.close) >= 21:
                     from ..indicators.moving_averages import ema
-                    if len(h1_data.close) >= 21:
-                        ema9 = ema(h1_data.close, 9)
-                        ema21 = ema(h1_data.close, 21)
-                        if ema9 and ema21 and len(ema9) > 0 and len(ema21) > 0:
-                            lon_trend_bias = TradeDirection.BUY if ema9[-1] > ema21[-1] else TradeDirection.SELL
+                    ema9 = ema(h1_data.close, 9)
+                    ema21 = ema(h1_data.close, 21)
+                    if ema9 is not None and ema21 is not None:
+                        lon_trend_bias = TradeDirection.BUY if ema9 > ema21 else TradeDirection.SELL
 
         seq = self.trigger.detect_xau_scalp_sequence(
             m15_data=m15_closed,

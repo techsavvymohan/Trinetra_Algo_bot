@@ -25,7 +25,7 @@ class DailyLossTracker:
 
     def calibrate_from_broker(self, connector, account: AccountInfo):
         """Calibrate day start equity and daily PnL directly from live broker closed deals (Zero DB dependency)."""
-        ref_time = account.server_time or datetime.now(timezone.utc).replace(tzinfo=None)
+        ref_time = getattr(account, "server_time", None) or datetime.now(timezone.utc).replace(tzinfo=None)
         today = broker_date(ref_time, self.reset_hour, self.reset_tz)
 
         today_pnl = 0.0

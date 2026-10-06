@@ -1810,7 +1810,18 @@ class XAUUSDBot:
         sess_name = current_session().value.upper()
 
         if connected:
+            resolved_symbols = []
+            for sym in self.symbols:
+                resolved = self.connector.resolve_broker_symbol(sym)
+                if resolved != sym:
+                    log.info("🎯 Auto-Resolved Broker Symbol: '%s' -> '%s'", sym, resolved)
+                resolved_symbols.append(resolved)
+            self.symbols = resolved_symbols
+            self.data_feeds = {s: MultiTFData(self.connector, s) for s in self.symbols}
+            self.spread_trackers = {s: SpreadTracker(self.cfg.trading.spread_lookback_bars) for s in self.symbols}
+            self.spread_filters = {s: SpreadFilter(self.spread_trackers[s], self.cfg.trading.max_spread_multiplier) for s in self.symbols}
             for s in self.symbols:
+                self.connector.symbol_select(s, True)
                 feed = self.data_feeds.get(s)
                 if feed:
                     feed.update_all()
