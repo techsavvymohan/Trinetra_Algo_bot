@@ -65,7 +65,12 @@ def broker_date(
 
 
 def minutes_since(then: datetime) -> float:
-    return (_utcnow() - then).total_seconds() / 60.0
+    now = datetime.now(timezone.utc)
+    if then.tzinfo is None:
+        now = now.replace(tzinfo=None)
+    else:
+        then = then.astimezone(timezone.utc)
+    return (now - then).total_seconds() / 60.0
 
 
 def to_ny_time(dt: Optional[datetime] = None, tz_name: str = "America/New_York") -> datetime:

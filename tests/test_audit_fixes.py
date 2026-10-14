@@ -314,3 +314,162 @@ def test_live_runner_trailing_stop_sync():
     assert runner_leg.sl_price == 2665.0
     order_entry.modify_sl_tp.assert_called_with(999, 2665.0, runner_leg.tp_price, symbol="XAUUSD")
     assert runner_leg.status == TradeStatus.OPEN
+
+
+def test_position_sizer_zero_and_negative_remaining_budget():
+    """Verify PositionSizer returns 0.0 when remaining_budget is exhausted or negative."""
+    from xauusd_bot.risk.position_sizer import PositionSizer
+    sizer = PositionSizer(initial_risk_pct=3.0, initial_balance=1000.0)
+    acc = AccountInfo(balance=1000.0, equity=1000.0)
+
+    # Exhausted budget: 0.0 -> must block (return 0.0)
+    lot_zero = sizer.calculate_lot_size(
+        account=acc,
+        entry_price=2650.0,
+        sl_price=2645.0,
+        direction=TradeDirection.BUY,
+        point_value=1.0,
+        contract_size=100,
+        remaining_budget=0.0,
+    )
+    assert lot_zero == 0.0
+
+    # Negative budget: -25.0 -> must block (return 0.0)
+    lot_neg = sizer.calculate_lot_size(
+        account=acc,
+        entry_price=2650.0,
+        sl_price=2645.0,
+        direction=TradeDirection.BUY,
+        point_value=1.0,
+        contract_size=100,
+        remaining_budget=-25.0,
+    )
+    assert lot_neg == 0.0
+
+    # None budget: normal sizing
+    lot_normal = sizer.calculate_lot_size(
+        account=acc,
+        entry_price=2650.0,
+        sl_price=2645.0,
+        direction=TradeDirection.BUY,
+        point_value=1.0,
+        contract_size=100,
+        remaining_budget=None,
+    )
+    assert lot_normal > 0.0
+
+
+def test_time_utils_minutes_since_aware_and_naive():
+    """Verify minutes_since handles both naive UTC and timezone-aware datetimes without TypeError."""
+    from xauusd_bot.utils.time_utils import minutes_since
+    from datetime import datetime, timezone, timedelta
+
+    # Naive datetime
+    naive_past = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=10)
+    elapsed_naive = minutes_since(naive_past)
+    assert 9.9 <= elapsed_naive <= 10.5
+
+    # Aware datetime
+    aware_past = datetime.now(timezone.utc) - timedelta(minutes=15)
+    elapsed_aware = minutes_since(aware_past)
+    assert 14.9 <= elapsed_aware <= 15.5
+
+
+def test_indicator_edge_cases_safety():
+    """Verify ATR, RSI, and Chandelier handle flat prices, zero periods, and empty lists."""
+    from xauusd_bot.indicators.atr import true_range, atr, atr_series
+    from xauusd_bot.indicators.rsi import rsi
+    from xauusd_bot.indicators.chandelier import chandelier_exit_long, chandelier_exit_short
+
+    # Empty lists
+    assert true_range([], [], []) == []
+    assert atr([], [], [], period=14) is None
+    assert atr_series([], [], [], period=14) == []
+    assert chandelier_exit_long([], [], []) is None
+    assert chandelier_exit_short([], [], []) is None
+
+    # Invalid period <= 0
+    assert atr([10.0] * 20, [9.0] * 20, [9.5] * 20, period=0) is None
+    assert rsi([10.0] * 20, period=-1) is None
+
+    # Flat market RSI (zero gain and zero loss) must be 50.0, NOT 100.0
+    flat_prices = [100.0] * 30
+    assert rsi(flat_prices, period=14) == 50.0
+
+
+def test_xau_engine_tiered_conviction_float_scalars():
+    """Verify XauusdEngine evaluates H1 EMA float scalars without len() or indexing crash."""
+    from xauusd_bot.engines.xau_engine import XauusdEngine
+    from xauusd_bot.models import TimeframeData, SignalGrade
+
+    cfg = Config()
+    cfg.trading.xau_a_plus_ny_core_only = False
+    cfg.trading.xau_a_plus_block_h1_bullish = False
+    cfg.trading.xau_a_plus_min_sl_dist = 0.0
+
+    eng = XauusdEngine(
+        symbol="XAUUSD",
+        config=cfg,
+        connector=MagicMock(),
+        account=MagicMock(),
+        data_feed=MagicMock(),
+        spread_tracker=MagicMock(),
+        spread_filter=MagicMock(),
+        news_filter=MagicMock(),
+        trigger=MagicMock(),
+        trade_mgr=MagicMock(),
+        cluster_mgr=MagicMock(),
+        persistence=MagicMock(),
+    )
+
+    # Setup mock trigger sequence
+    eng.trigger.detect_xau_scalp_sequence.return_value = {
+        "direction": TradeDirection.BUY,
+        "entry_price": 2650.0,
+        "sl_price": 2645.0,
+        "tp_price": 2660.0,
+        "atr": 1.5,
+    }
+
+    # H1 data with 30 bars
+    h1_bars = TimeframeData(
+        tf="H1",
+        time=[datetime.now()] * 30,
+        open=[2640.0 + i for i in range(30)],
+        high=[2642.0 + i for i in range(30)],
+        low=[2639.0 + i for i in range(30)],
+        close=[2641.0 + i for i in range(30)],
+        tick_volume=[100] * 30,
+        spread=[10] * 30,
+    )
+    m1_bars = TimeframeData(
+        tf="M1",
+        time=[datetime.now()] * 30,
+        open=[2650.0] * 30,
+        high=[2652.0] * 30,
+        low=[2648.0] * 30,
+        close=[2650.0] * 30,
+        tick_volume=[100] * 30,
+        spread=[10] * 30,
+    )
+    data_all = {"H1": h1_bars, "M15": h1_bars, "M1": m1_bars}
+
+    # Should run smoothly and assign A_PLUS grade without TypeError
+    now = datetime(2026, 10, 6, 14, 0, tzinfo=timezone.utc)
+    eng.trade_mgr.create_pending_retest_cluster = MagicMock(return_value=None)
+    eng.trade_mgr.execute_limit_signal = MagicMock(return_value=None)
+    eng.evaluate_and_trigger(
+        now_utc=now,
+        ny_dt=now,
+        data_all=data_all,
+        m1_data=m1_bars,
+        current_price=2650.0,
+        pending_clusters=[],
+        account_info=MagicMock(balance=1000.0, equity=1000.0),
+    )
+    call = eng.trade_mgr.create_pending_retest_cluster.call_args or eng.trade_mgr.execute_limit_signal.call_args
+    assert call is not None
+    sig = call.kwargs.get("signal")
+    assert sig is not None
+    assert sig.grade == SignalGrade.A_PLUS
+

@@ -462,6 +462,8 @@ class TriggerDetector:
         delta_absorption_mode: str = "soft",
         enable_hvn_tp_calibration: bool = True,
         min_sl_distance: float = 0.0,
+        min_displacement_points: float = 0.0,
+        enable_anti_trap: bool = False,
     ) -> Optional[dict]:
         """Detect the complete, causal XAUUSD Scalping Sequence:
         Liquidity Context -> M1 Sweep & Reclaim -> Delta Absorption -> Displacement -> True MSS -> FVG.
@@ -549,8 +551,9 @@ class TriggerDetector:
                             rng = h1[d] - l1[d]
                             if body > 0 and rng > 0:
                                 if (body / m1_atr) >= min_atr_mult and (body / rng) >= min_body_ratio:
-                                    has_displacement = True
-                                    break
+                                    if min_displacement_points <= 0.0 or body >= min_displacement_points:
+                                        has_displacement = True
+                                        break
 
                         if has_displacement:
                             if telemetry is not None:
@@ -638,8 +641,9 @@ class TriggerDetector:
                             rng = h1[d] - l1[d]
                             if body > 0 and rng > 0:
                                 if (body / m1_atr) >= min_atr_mult and (body / rng) >= min_body_ratio:
-                                    has_displacement = True
-                                    break
+                                    if min_displacement_points <= 0.0 or body >= min_displacement_points:
+                                        has_displacement = True
+                                        break
 
                         if has_displacement:
                             if telemetry is not None:
@@ -695,6 +699,91 @@ class TriggerDetector:
                                             "dynamic_t1_pct": 50.0 if is_chop else 25.0,
                                             "dynamic_t1_r": 1.20 if is_chop else 1.50,
                                         }
+
+        # -------------------------------------------------------------
+        # 5. Anti-Trap Inducement Inversion Engine (IFVG)
+        # When macro trend is active, any counter-trend M1 FVG trap that inverts
+        # triggers a high-conviction trend-continuation entry!
+        # -------------------------------------------------------------
+        if enable_anti_trap and trend_bias is not None:
+            if trend_bias == TradeDirection.SELL:
+                # Scan recent sequence window for a failed counter-trend Bullish FVG (h[k-2] < l[k])
+                for k in range(max(2, n1 - sequence_window_m1), n1):
+                    if h1[k - 2] < l1[k]:
+                        fvg_low = h1[k - 2]
+                        fvg_high = l1[k]
+                        # Inversion breakdown: current close breaks below fvg_low
+                        if curr_c < fvg_low and curr_c >= (fvg_low - 3.5 * m1_atr):
+                            recent_high = max(h1[k - 2:])
+                            structural_sl = recent_high + atr_pad
+                            risk = structural_sl - curr_c
+                            effective_min_sl = min_sl_distance
+                            if curr_c > 1000:
+                                effective_min_sl = max(effective_min_sl, m1_atr * 2.0 if m1_atr > 0 else 5.0)
+                            if effective_min_sl > 0 and risk < effective_min_sl:
+                                risk = effective_min_sl
+                                structural_sl = curr_c + risk
+                            if risk > 0:
+                                tp = curr_c - (risk * target_r)
+                                return {
+                                    "direction": TradeDirection.SELL,
+                                    "bsl": bsl,
+                                    "ssl": ssl,
+                                    "swept_level": fvg_low,
+                                    "sweep_direction": "INVERSION_FVG_BREAKDOWN",
+                                    "sweep_high": recent_high,
+                                    "mss_level": fvg_low,
+                                    "fvg_low": fvg_low,
+                                    "fvg_high": fvg_high,
+                                    "entry_price": round(curr_c, digits),
+                                    "sl_price": round(structural_sl, digits),
+                                    "tp_price": round(tp, digits),
+                                    "risk_distance": round(risk, digits),
+                                    "target_r": target_r,
+                                    "atr": round(m1_atr, 4 if digits == 2 else 6),
+                                    "is_chop": is_chop,
+                                    "setup_type": "INVERSION_FVG_ANTI_TRAP",
+                                    "anti_trap_inversion": True,
+                                }
+            elif trend_bias == TradeDirection.BUY:
+                # Scan recent sequence window for a failed counter-trend Bearish FVG (l[k-2] > h[k])
+                for k in range(max(2, n1 - sequence_window_m1), n1):
+                    if l1[k - 2] > h1[k]:
+                        fvg_low = h1[k]
+                        fvg_high = l1[k - 2]
+                        # Inversion breakout: current close breaks above fvg_high
+                        if curr_c > fvg_high and curr_c <= (fvg_high + 3.5 * m1_atr):
+                            recent_low = min(l1[k - 2:])
+                            structural_sl = recent_low - atr_pad
+                            risk = curr_c - structural_sl
+                            effective_min_sl = min_sl_distance
+                            if curr_c > 1000:
+                                effective_min_sl = max(effective_min_sl, m1_atr * 2.0 if m1_atr > 0 else 5.0)
+                            if effective_min_sl > 0 and risk < effective_min_sl:
+                                risk = effective_min_sl
+                                structural_sl = curr_c - risk
+                            if risk > 0:
+                                tp = curr_c + (risk * target_r)
+                                return {
+                                    "direction": TradeDirection.BUY,
+                                    "bsl": bsl,
+                                    "ssl": ssl,
+                                    "swept_level": fvg_high,
+                                    "sweep_direction": "INVERSION_FVG_BREAKOUT",
+                                    "sweep_low": recent_low,
+                                    "mss_level": fvg_high,
+                                    "fvg_low": fvg_low,
+                                    "fvg_high": fvg_high,
+                                    "entry_price": round(curr_c, digits),
+                                    "sl_price": round(structural_sl, digits),
+                                    "tp_price": round(tp, digits),
+                                    "risk_distance": round(risk, digits),
+                                    "target_r": target_r,
+                                    "atr": round(m1_atr, 4 if digits == 2 else 6),
+                                    "is_chop": is_chop,
+                                    "setup_type": "INVERSION_FVG_ANTI_TRAP",
+                                    "anti_trap_inversion": True,
+                                }
 
         return None
 

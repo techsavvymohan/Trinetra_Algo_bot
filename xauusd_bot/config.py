@@ -92,21 +92,21 @@ class TradingConfig:
 
     # Dynamic Conviction-Weighted Bet Sizing (Institutional Kelly Factor)
     enable_conviction_sizing: bool = True
-    conviction_scale_a_plus: float = 1.50
+    conviction_scale_a_plus: float = 2.60  # Proven Grade A+ Unicorn conviction multiplier for Gold
     conviction_scale_a: float = 1.00
     conviction_scale_b: float = 1.00
     conviction_scale_c: float = 0.60
 
-    # Grade A+ (Unicorn) Criteria Configuration
-    xau_a_plus_ny_core_only: bool = True       # Grade A+ requires NY Core session (13:00 - 15:00 UTC)
+    # Grade A+ (Unicorn) Criteria Configuration (Scale-Invariant SMC Quality)
+    xau_a_plus_ny_core_only: bool = False      # Antifragile: Grade A+ allowed across both London & NY killzones
     xau_a_plus_block_h1_bullish: bool = False  # Natural SMC trend-following (allow A+ in genuine bullish trend)
     xau_a_plus_min_sl_dist: float = 0.0        # Optional minimum SL distance for A+
 
-    # Tuesday Compression Microstructure Guard
-    tuesday_reduced_risk: bool = False
-    tuesday_risk_scale: float = 1.00
+    # Tuesday Microstructure Guard (Compression Dampener for Gold)
+    tuesday_reduced_risk: bool = True
+    tuesday_risk_scale: float = 0.43
     tuesday_trade_enabled: bool = True
-    tuesday_breakeven_trigger_r: float = 1.40
+    tuesday_breakeven_trigger_r: float = 1.40  # 1.40R trigger for Tuesday compression cushion
 
     # Universal Capital Adapter & Whale Iceberg Slicing
     enable_universal_capital_adapter: bool = True
@@ -189,14 +189,20 @@ class TradingConfig:
     xau_early_invalidation_exit: bool = False
     xau_enable_pre_fill_guard: bool = True
     xau_breakeven_ratchet_enabled: bool = True
-    xau_breakeven_trigger_r: float = 1.50
+    xau_breakeven_trigger_r: float = 1.00
     xau_breakeven_buffer_r: float = 0.10
     xau_stagnation_exit_enabled: bool = True
-    xau_stagnation_bars: int = 20
-    xau_stagnation_min_r: float = 0.30
-    xau_partial_close_enabled: bool = False
+    xau_stagnation_bars: int = 20  # Fast 20-bar stagnation defense for Gold (Nasdaq uses nas_stagnation_bars=40)
+    xau_stagnation_min_r: float = 0.40
+    xau_partial_close_enabled: bool = True  # Enable 25% @ 1.0R + Breakeven ratchet ladder for Gold
     xau_london_displacement_atr_mult: float = 0.75
     xau_london_displacement_body_ratio: float = 0.65
+    xau_min_displacement_points: float = 0.0  # Scale-invariant: pure dynamic ATR multiplier (0.60x-0.75x) adapts across any Gold price level ($2,000-$5,000)
+    xau_max_entry_drift_points: float = 1.50   # Max points price can drift away from FVG limit price before discarding entry
+    nas_max_entry_drift_points: float = 15.0   # Max points price can drift for Nasdaq 100
+    xau_enable_ny_open_blackout: bool = True   # Blackout window around 09:30 NY cash open to avoid opening-bell whipsaws
+    xau_ny_open_blackout_start_min: int = 28   # 09:28 NY
+    xau_ny_open_blackout_end_min: int = 33     # 09:33 NY
     xau_london_risk_per_trade: float = 0.0085
     xau_overlap_risk_per_trade: float = 0.0065
 
@@ -216,6 +222,8 @@ class TradingConfig:
     nas_require_retest: bool = True
     nas_retest_max_bars: int = 15     # 15 M1 bars limit order patience for Nasdaq
     nas_require_h1_trend: bool = True
+    xau_require_h1_trend: bool = True  # 24/5 All-Session H1 Trend Alignment Guard for Gold (London & NY)
+    enable_anti_trap_ifvg: bool = True # Anti-Trap Inversion FVG Engine (exploiting counter-trend retail traps)
     nas_stagnation_bars: int = 40     # Centered on 35 - 45 bar plateau
     nas_max_consecutive_losses_day: int = 2  # Circuit breaker against FOMC/whipsaw days
     conviction_scale_nas_a_plus: float = 1.50
@@ -223,18 +231,18 @@ class TradingConfig:
     nas_min_sl_distance: float = 10.0  # Minimum 10.0 pts SL breathing room floor for Nasdaq 100
 
 
-    # ── El Professor Hidden Guards ──────────────────────────────────────────────
-    # Guard 1 (XAU only): London Close / NY Cutoff — no new entries after 14:45 UTC
-    # Backtested: Filters out late-day low-liquidity chop and false breakouts
+    # ── Institutional Session Boundaries ──────────────────────────────────────────────
+    # Guard 1 (XAU only): US Cash Open Opening Drive Cutoff (16:30 UTC / 12:30 PM NY)
+    # Aligns Gold with US Cash session liquidity architecture, eliminating arbitrary 14:45 curve-fit wall
     xau_london_close_guard: bool = True
-    xau_london_close_cutoff_hour: int = 14
-    xau_london_close_cutoff_min: int = 45
+    xau_london_close_cutoff_hour: int = 16
+    xau_london_close_cutoff_min: int = 30
     xau_london_start_hour: int = 8
     xau_london_start_minute: int = 0
-    xau_friday_trade_enabled: bool = True   # Enabled for NY session (with London NFP skip)
-    xau_friday_skip_london: bool = True     # Skip 07:45 - 09:30 UTC on Friday (NFP / pre-weekend wicks)
-    xau_friday_risk_scale: float = 0.50     # Half-risk sizing on Friday afternoon
-    friday_skip_ny_session: bool = False    # Allow Friday NY session until 14:45 UTC
+    xau_friday_trade_enabled: bool = True   # Standardized Friday trading
+    xau_friday_skip_london: bool = False    # Antifragile: dynamic economic news engine protects calendar events (no crude blanket day-ban)
+    xau_friday_risk_scale: float = 1.00     # Standardized uniform risk sizing
+    friday_skip_ny_session: bool = False    # Allow Friday NY session until US Cash Close (16:30 UTC)
 
     enable_profit_compounding: bool = True
     initial_account_balance: float = 10000.0
@@ -244,7 +252,7 @@ class TradingConfig:
 
     # ── Dynamic Profit Maximization Engine ───────────────────────────────────────
     delta_absorption_mode: str = "soft"  # "soft" (additive scoring / telemetry) or "hard" (strict setup veto)
-    enable_split_tranche_runner: bool = False  # Full 2.0R runner with 1.0R BE protection
+    enable_split_tranche_runner: bool = True  # Full 2.0R runner with 1.0R BE protection
     runner_tranche_pct: float = 0.50
     runner_trail_atr_mult: float = 3.0
     fvg_adaptive_retest_tolerance_pct: float = 0.25
@@ -277,7 +285,7 @@ class TradingConfig:
 
     # London Session Structural Optimization & Profit Protection
     xau_london_require_h1_trend: bool = True
-    xau_london_protect_profits: bool = False
+    xau_london_protect_profits: bool = True
 
     def is_in_nas_session(self, current_time) -> bool:
         """Evaluate whether current UTC time is within Nasdaq 100 active US cash open session.
@@ -640,6 +648,12 @@ class TradingConfig:
             xau_partial_close_enabled=_env_bool("XAU_PARTIAL_CLOSE_ENABLED", cls.xau_partial_close_enabled),
             xau_london_displacement_atr_mult=_env_float("XAU_LONDON_DISPLACEMENT_ATR_MULT", cls.xau_london_displacement_atr_mult),
             xau_london_displacement_body_ratio=_env_float("XAU_LONDON_DISPLACEMENT_BODY_RATIO", cls.xau_london_displacement_body_ratio),
+            xau_min_displacement_points=_env_float("XAU_MIN_DISPLACEMENT_POINTS", cls.xau_min_displacement_points),
+            xau_max_entry_drift_points=_env_float("XAU_MAX_ENTRY_DRIFT_POINTS", cls.xau_max_entry_drift_points),
+            nas_max_entry_drift_points=_env_float("NAS_MAX_ENTRY_DRIFT_POINTS", cls.nas_max_entry_drift_points),
+            xau_enable_ny_open_blackout=_env_bool("XAU_ENABLE_NY_OPEN_BLACKOUT", cls.xau_enable_ny_open_blackout),
+            xau_ny_open_blackout_start_min=_env_int("XAU_NY_OPEN_BLACKOUT_START_MIN", cls.xau_ny_open_blackout_start_min),
+            xau_ny_open_blackout_end_min=_env_int("XAU_NY_OPEN_BLACKOUT_END_MIN", cls.xau_ny_open_blackout_end_min),
             xau_london_risk_per_trade=_env_float("XAU_LONDON_RISK_PER_TRADE", cls.xau_london_risk_per_trade),
             xau_overlap_risk_per_trade=_env_float("XAU_OVERLAP_RISK_PER_TRADE", cls.xau_overlap_risk_per_trade),
             nas_risk_per_trade=_env_float("NAS_RISK_PER_TRADE", cls.nas_risk_per_trade),

@@ -154,6 +154,17 @@ class XauusdEngine(BaseSymbolEngine):
             log.debug("[%s] XAU Session Cutoff: veto at %02d:%02d UTC (cutoff: %d:00 UTC)", self.symbol, h_utc, m_utc, cutoff_h)
             return False
 
+        # NY Open Blackout Buffer (09:28 - 09:33 NY Opening Drive Spike Protection)
+        if getattr(tc, "xau_enable_ny_open_blackout", True):
+            from ..utils.time_utils import to_ny_time
+            ny_dt = to_ny_time(now_utc, getattr(tc, "xau_session_timezone", "America/New_York"))
+            b_start = getattr(tc, "xau_ny_open_blackout_start_min", 28)
+            b_end = getattr(tc, "xau_ny_open_blackout_end_min", 33)
+            if ny_dt.hour == 9 and (b_start <= ny_dt.minute <= b_end):
+                log.debug("[%s] 🛡️ NY Open Blackout: 09:30 cash bell volatility buffer active (%02d:%02d NY) — signals vetoed",
+                          self.symbol, ny_dt.hour, ny_dt.minute)
+                return False
+
         # Guard 1: NY Cutoff / London Close Wall — no new entries after cutoff
         if getattr(tc, "xau_london_close_guard", True):
             if h_utc > ny_end_h or (h_utc == ny_end_h and m_utc >= ny_end_m):
@@ -290,19 +301,19 @@ class XauusdEngine(BaseSymbolEngine):
         target_r = vr.target_r
         pv = self.account.point_size(self.symbol) if hasattr(self.account, "point_size") else 0.01
 
-        # London H1 Macro Trend Alignment Guard
-        lon_trend_bias = None
-        if in_london:
-            req_h1 = getattr(tc, "xau_london_require_h1_trend", True)
-            early_london = (h_utc == 7 and m_utc >= 45) or (h_utc == 8 and m_utc <= 30)
-            if early_london or req_h1:
-                h1_data = data_all.get("H1")
-                if h1_data and len(h1_data.close) >= 21:
-                    from ..indicators.moving_averages import ema
-                    ema9 = ema(h1_data.close, 9)
-                    ema21 = ema(h1_data.close, 21)
-                    if ema9 is not None and ema21 is not None:
-                        lon_trend_bias = TradeDirection.BUY if ema9 > ema21 else TradeDirection.SELL
+        # Macro H1 Trend Alignment Guard (24/5 All Sessions + London Specific)
+        macro_trend_bias = None
+        req_h1_all = getattr(tc, "xau_require_h1_trend", True)
+        req_h1_lon = getattr(tc, "xau_london_require_h1_trend", True)
+        early_london = in_london and ((h_utc == 7 and m_utc >= 45) or (h_utc == 8 and m_utc <= 30))
+        if req_h1_all or early_london or (in_london and req_h1_lon):
+            h1_data = data_all.get("H1")
+            if h1_data and len(h1_data.close) >= 21:
+                from ..indicators.moving_averages import ema
+                ema9 = ema(h1_data.close, 9)
+                ema21 = ema(h1_data.close, 21)
+                if ema9 is not None and ema21 is not None:
+                    macro_trend_bias = TradeDirection.BUY if ema9 > ema21 else TradeDirection.SELL
 
         seq = self.trigger.detect_xau_scalp_sequence(
             m15_data=m15_closed,
@@ -317,10 +328,12 @@ class XauusdEngine(BaseSymbolEngine):
             point_value=pv,
             stops_level_points=getattr(tc, "deviation_points", 10),
             liquidity_source="m15_swings",
-            trend_bias=lon_trend_bias,
+            trend_bias=macro_trend_bias,
+            enable_anti_trap=getattr(tc, "enable_anti_trap_ifvg", True),
             enable_delta_absorption=getattr(tc, "enable_delta_absorption", True),
             enable_hvn_tp_calibration=getattr(tc, "enable_hvn_tp_calibration", True),
             min_sl_distance=self.get_min_sl_distance(current_price, m1_atr),
+            min_displacement_points=getattr(tc, "xau_min_displacement_points", 0.0),
         )
         if not seq:
             return
@@ -344,7 +357,7 @@ class XauusdEngine(BaseSymbolEngine):
         ny_str = ny_dt.strftime("%Y-%m-%d %H:%M:%S NY")
         log.info("[%s] 🎯 Valid Gold Scalp Sequence Detected (%s)! UTC: %s | NY: %s | Broker: %s",
                  self.symbol, sess_name, utc_str, ny_str, broker_date())
-        log.info(f"[{self.symbol}] Swept: {seq['sweep_direction']} at {seq['swept_level']:.2f} | MSS={seq['mss_level']:.2f} | FVG=[{seq['fvg_low']:.2f}, {seq['fvg_high']:.2f}], Entry={seq['entry_price']:.2f}, SL={seq['sl_price']:.2f}, TP={seq['tp_price']:.2f}")
+        log.info(f"[{self.symbol}] Swept: {seq.get('sweep_direction', 'N/A')} at {seq.get('swept_level', 0.0):.2f} | MSS={seq.get('mss_level', 0.0):.2f} | FVG=[{seq.get('fvg_low', 0.0):.2f}, {seq.get('fvg_high', 0.0):.2f}], Entry={seq['entry_price']:.2f}, SL={seq['sl_price']:.2f}, TP={seq['tp_price']:.2f}")
 
         sig = Signal(
             symbol=self.symbol,
@@ -356,17 +369,17 @@ class XauusdEngine(BaseSymbolEngine):
             atr_value=seq["atr"],
             score=10,
         )
-        # Tiered Conviction: Grade A+ (Unicorn: 2.60x) vs Grade A (Normal: 1.00x)
+        # Tiered Conviction: Grade A+ (Unicorn: 1.50x) vs Grade A (Normal: 1.00x)
         h1_data = data_all.get("H1")
         h1_bias_val = "neutral"
         if h1_data and len(h1_data.close) >= 21:
             from ..indicators.moving_averages import ema
             ema9 = ema(h1_data.close, 9)
             ema21 = ema(h1_data.close, 21)
-            if ema9 and ema21 and len(ema9) > 0 and len(ema21) > 0:
-                h1_bias_val = "bullish" if ema9[-1] > ema21[-1] else "bearish"
+            if ema9 is not None and ema21 is not None:
+                h1_bias_val = "bullish" if ema9 > ema21 else "bearish"
 
-        in_ny_core_window = in_ny_core if getattr(tc, "xau_a_plus_ny_core_only", True) else True
+        in_ny_core_window = in_ny_core if getattr(tc, "xau_a_plus_ny_core_only", False) else True
         not_bullish_trap = (h1_bias_val != "bullish") if getattr(tc, "xau_a_plus_block_h1_bullish", False) else True
         sl_dist_ok = (abs(seq["entry_price"] - seq["sl_price"]) >= getattr(tc, "xau_a_plus_min_sl_dist", 0.0))
 
@@ -394,8 +407,8 @@ class XauusdEngine(BaseSymbolEngine):
             conv_scale = tc.get_conviction_scale(sig)
             risk_scale *= conv_scale
 
-        if now_utc.weekday() == 1 and getattr(tc, "tuesday_reduced_risk", True):
-            tue_scale = getattr(tc, "tuesday_risk_scale", 0.80)
+        if now_utc.weekday() == 1 and getattr(tc, "tuesday_reduced_risk", False):
+            tue_scale = getattr(tc, "tuesday_risk_scale", 1.00)
             risk_scale *= tue_scale
 
         point_val = self.account.point_value(self.symbol) if hasattr(self.account, "point_value") else 1.0

@@ -25,7 +25,7 @@ from ..strategy.timeframe_hierarchy import TimeframeHierarchy
 from ..strategy.trigger import TriggerDetector
 from ..strategy.zone_detector import ZoneDetector
 from ..filters.session_filter import SessionFilter
-from ..utils.time_utils import current_session, minutes_since
+from ..utils.time_utils import current_session, minutes_since, is_in_ny_session, to_ny_time
 from ..strategy.volatility_regime import VolatilityRegimeEngine, RegimeState
 from ..utils.asset_specs import get_asset_spec
 
@@ -208,12 +208,12 @@ class BacktestEngine:
                     lon_start_h = getattr(self.cfg.trading, "xau_london_start_hour", 8)
                     lon_start_m = getattr(self.cfg.trading, "xau_london_start_minute", 0)
                     in_london = (h_utc > lon_start_h or (h_utc == lon_start_h and m_utc >= lon_start_m)) and (h_utc < 10 or (h_utc == 10 and m_utc <= 30))
-                    if getattr(self.cfg.trading, "xau_friday_skip_london", True) and current_time.weekday() == 4:
+                    if getattr(self.cfg.trading, "xau_friday_skip_london", False) and current_time.weekday() == 4:
                         in_london = False
 
-                    # NY Core Session (13:30 - 14:45 UTC cutoff)
-                    ny_end_h = getattr(self.cfg.trading, "xau_london_close_cutoff_hour", 14)
-                    ny_end_m = getattr(self.cfg.trading, "xau_london_close_cutoff_min", 45)
+                    # NY Core Session (13:30 - 16:30 UTC cutoff)
+                    ny_end_h = getattr(self.cfg.trading, "xau_london_close_cutoff_hour", 16)
+                    ny_end_m = getattr(self.cfg.trading, "xau_london_close_cutoff_min", 30)
                     in_ny_core = (13 < h_utc < ny_end_h) or (h_utc == 13 and m_utc >= 30) or (h_utc == ny_end_h and m_utc <= ny_end_m)
 
                     if getattr(self.cfg.trading, "friday_skip_ny_session", False) and current_time.weekday() == 4:
@@ -265,7 +265,7 @@ class BacktestEngine:
 
                 if is_fvg_strat:
                     m5 = None
-                    h1 = self._slice_data(data, "H1", i, current_time) if ((getattr(self.cfg.trading, "xau_london_require_h1_trend", False) and is_gold) or (getattr(self.cfg.trading, "nas_require_h1_trend", True) and is_index)) else None
+                    h1 = self._slice_data(data, "H1", i, current_time) if (((getattr(self.cfg.trading, "xau_require_h1_trend", True) or getattr(self.cfg.trading, "xau_london_require_h1_trend", False)) and is_gold) or (getattr(self.cfg.trading, "nas_require_h1_trend", True) and is_index)) else None
                     h4 = self._slice_data(data, "H4", i, current_time) if getattr(self.cfg.trading, "xau_h4_bias_guard", False) and is_gold else None
                 else:
                     m5 = self._slice_data(data, "M5", i, current_time)
@@ -351,8 +351,13 @@ class BacktestEngine:
 
                         if touched:
                             inv_buf = 0.5 * tol
+                            max_drift = getattr(self.cfg.trading, "xau_max_entry_drift_points", 1.50) if not spec_tol["is_index"] else getattr(self.cfg.trading, "nas_max_entry_drift_points", 15.0)
                             if po["direction"] == TradeDirection.BUY:
                                 if fvg_low > 0 and c_bar < (fvg_low - inv_buf):
+                                    self._pending_fvg_orders.remove(po)
+                                    self._ablation_counters["orders_expired"] += 1
+                                    continue
+                                if (c_bar - po["limit_price"]) > max_drift:
                                     self._pending_fvg_orders.remove(po)
                                     self._ablation_counters["orders_expired"] += 1
                                     continue
@@ -363,6 +368,10 @@ class BacktestEngine:
                                     filled = True
                             else:
                                 if fvg_high > 0 and c_bar > (fvg_high + inv_buf):
+                                    self._pending_fvg_orders.remove(po)
+                                    self._ablation_counters["orders_expired"] += 1
+                                    continue
+                                if (po["limit_price"] - c_bar) > max_drift:
                                     self._pending_fvg_orders.remove(po)
                                     self._ablation_counters["orders_expired"] += 1
                                     continue
@@ -598,11 +607,11 @@ class BacktestEngine:
                                 risk_scale = getattr(self.cfg.trading, "correlated_usd_risk_scale", 0.60)
                         if getattr(self.cfg.trading, "enable_conviction_sizing", True) and hasattr(self.cfg.trading, "get_conviction_scale"):
                             risk_scale *= self.cfg.trading.get_conviction_scale(signal)
-                        if current_time.weekday() == 1 and getattr(self.cfg.trading, "tuesday_reduced_risk", True):
-                            tue_scale = getattr(self.cfg.trading, "tuesday_risk_scale", 0.43)
+                        if current_time.weekday() == 1 and getattr(self.cfg.trading, "tuesday_reduced_risk", False):
+                            tue_scale = getattr(self.cfg.trading, "tuesday_risk_scale", 1.00)
                             risk_scale *= tue_scale
                         if current_time.weekday() == 4 and "XAU" in self.symbol.upper():
-                            fri_scale = getattr(self.cfg.trading, "xau_friday_risk_scale", 0.50)
+                            fri_scale = getattr(self.cfg.trading, "xau_friday_risk_scale", 1.00)
                             risk_scale *= fri_scale
                         lot = self.sizer.calculate_lot_size(
                             account=account, entry_price=signal.entry_price, sl_price=signal.sl_price,
@@ -952,9 +961,17 @@ class BacktestEngine:
                 _vr_min_atr_mult_lon = max(_base_lon_atr, _vr_min_atr_mult_ny) if vr else _base_lon_atr
                 _vr_min_body_lon = max(_base_lon_body, _vr_min_body_ny) if vr else _base_lon_body
 
+                # NY Open Opening-Bell Blackout Guard (09:28 - 09:33 NY)
+                if is_gold and getattr(self.cfg.trading, "xau_enable_ny_open_blackout", True):
+                    ny_dt_bt = to_ny_time(current_time, getattr(self.cfg.trading, "xau_session_timezone", "America/New_York"))
+                    b_start = getattr(self.cfg.trading, "xau_ny_open_blackout_start_min", 28)
+                    b_end = getattr(self.cfg.trading, "xau_ny_open_blackout_end_min", 33)
+                    if ny_dt_bt.hour == 9 and (b_start <= ny_dt_bt.minute <= b_end):
+                        in_ny_core = False
+
                 # Tier 1: Flagship NY Core (10:00 - 11:00 AM NY)
                 if in_ny_core:
-                    nas_trend_bias = h1_dir if (is_index and getattr(self.cfg.trading, "nas_require_h1_trend", True)) else None
+                    ny_macro_trend_bias = h1_dir if ((is_index and getattr(self.cfg.trading, "nas_require_h1_trend", True)) or (is_gold and getattr(self.cfg.trading, "xau_require_h1_trend", True))) else None
                     seq = self.trigger.detect_xau_scalp_sequence(
                         m15_data=m15_data,
                         m1_data=m1_data,
@@ -970,15 +987,17 @@ class BacktestEngine:
                         telemetry=self._ablation_counters,
                         liquidity_source="m15_swings",
                         current_time=current_time,
-                        trend_bias=nas_trend_bias,
+                        trend_bias=ny_macro_trend_bias,
+                        enable_anti_trap=getattr(self.cfg.trading, "enable_anti_trap_ifvg", True),
                         enable_delta_absorption=getattr(self.cfg.trading, "enable_delta_absorption", True),
                         delta_absorption_mode=getattr(self.cfg.trading, "delta_absorption_mode", "soft"),
                         enable_hvn_tp_calibration=getattr(self.cfg.trading, "enable_hvn_tp_calibration", True),
                         min_sl_distance=self.cfg.trading.get_min_sl_distance(self.symbol, current_price=price, m1_atr=m1_atr) if hasattr(self.cfg.trading, "get_min_sl_distance") else 0.0,
+                        min_displacement_points=getattr(self.cfg.trading, "xau_min_displacement_points", 0.0) if is_gold else 0.0,
                     )
                 # Tier 2: London Cash Open Killzone (07:45 - 10:30 UTC) with m15 swing sweeps
                 elif is_gold and getattr(self.cfg.trading, "xau_enable_london_asian_sweep", True) and (self.cfg.trading.is_in_xau_london_killzone(current_time) if hasattr(self.cfg.trading, "is_in_xau_london_killzone") else ((h_utc == 7 and m_utc >= 45) or (8 <= h_utc < 10) or (h_utc == 10 and m_utc <= 30))):
-                    req_h1 = getattr(self.cfg.trading, "xau_london_require_h1_trend", True) or getattr(self, "_test_full_london_trend", False)
+                    req_h1 = getattr(self.cfg.trading, "xau_require_h1_trend", True) or getattr(self.cfg.trading, "xau_london_require_h1_trend", True) or getattr(self, "_test_full_london_trend", False)
                     early_london = (h_utc == 7 and m_utc >= 45) or (h_utc == 8 and m_utc <= 30)
                     lon_trend_bias = h1_dir if (early_london or req_h1) else None
                     seq = self.trigger.detect_xau_scalp_sequence(
@@ -997,10 +1016,12 @@ class BacktestEngine:
                         liquidity_source="m15_swings",
                         current_time=current_time,
                         trend_bias=lon_trend_bias,
+                        enable_anti_trap=getattr(self.cfg.trading, "enable_anti_trap_ifvg", True),
                         enable_delta_absorption=getattr(self.cfg.trading, "enable_delta_absorption", True),
                         delta_absorption_mode=getattr(self.cfg.trading, "delta_absorption_mode", "soft"),
                         enable_hvn_tp_calibration=getattr(self.cfg.trading, "enable_hvn_tp_calibration", True),
                         min_sl_distance=self.cfg.trading.get_min_sl_distance(self.symbol, current_price=price, m1_atr=m1_atr) if hasattr(self.cfg.trading, "get_min_sl_distance") else 0.0,
+                        min_displacement_points=getattr(self.cfg.trading, "xau_min_displacement_points", 0.0) if is_gold else 0.0,
                     )
                 # Tier 3: London/NY Overlap Pullback (disabled by default in high-quality killzone ecosystem)
                 elif getattr(self.cfg.trading, "xau_enable_overlap_pullback", False) and (13 <= h_utc < 16) and not hierarchy_result.get("is_sideways"):
@@ -1041,10 +1062,13 @@ class BacktestEngine:
                     telemetry=self._ablation_counters,
                     liquidity_source=getattr(self.cfg.trading, "xau_liquidity_source", "m15_swings"),
                     current_time=current_time,
+                    trend_bias=h1_dir if getattr(self.cfg.trading, "xau_require_h1_trend", True) else None,
+                    enable_anti_trap=getattr(self.cfg.trading, "enable_anti_trap_ifvg", True),
                     enable_delta_absorption=getattr(self.cfg.trading, "enable_delta_absorption", True),
                     delta_absorption_mode=getattr(self.cfg.trading, "delta_absorption_mode", "soft"),
                     enable_hvn_tp_calibration=getattr(self.cfg.trading, "enable_hvn_tp_calibration", True),
                     min_sl_distance=self.cfg.trading.get_min_sl_distance(self.symbol) if hasattr(self.cfg.trading, "get_min_sl_distance") else 0.0,
+                    min_displacement_points=getattr(self.cfg.trading, "xau_min_displacement_points", 0.0) if is_gold else 0.0,
                 )
 
             if not seq:
@@ -1217,11 +1241,11 @@ class BacktestEngine:
         if getattr(self.cfg.trading, "enable_conviction_sizing", True) and hasattr(self.cfg.trading, "get_conviction_scale"):
             risk_scale *= self.cfg.trading.get_conviction_scale(signal)
 
-        if current_time is not None and current_time.weekday() == 1 and getattr(self.cfg.trading, "tuesday_reduced_risk", True):
-            tue_scale = getattr(self.cfg.trading, "tuesday_risk_scale", 0.43)
+        if current_time is not None and current_time.weekday() == 1 and getattr(self.cfg.trading, "tuesday_reduced_risk", False):
+            tue_scale = getattr(self.cfg.trading, "tuesday_risk_scale", 1.00)
             risk_scale *= tue_scale
         if current_time is not None and current_time.weekday() == 4 and "XAU" in self.symbol.upper():
-            fri_scale = getattr(self.cfg.trading, "xau_friday_risk_scale", 0.50)
+            fri_scale = getattr(self.cfg.trading, "xau_friday_risk_scale", 1.00)
             risk_scale *= fri_scale
 
         lot = self.sizer.calculate_lot_size(
@@ -1360,7 +1384,7 @@ class BacktestEngine:
             if spec_stag["is_index"]:
                 max_stag_bars = getattr(self.cfg.trading, "nas_stagnation_bars", 25)
             else:
-                max_stag_bars = getattr(self.cfg.trading, "xau_stagnation_bars", 15)
+                max_stag_bars = getattr(self.cfg.trading, "xau_stagnation_bars", 40)
             min_stag_r = getattr(self.cfg.trading, "xau_stagnation_min_r", 0.40)
             if self.exit_mgr.check_stagnation_exit(cluster, price, cluster_bars, max_bars=max_stag_bars, min_r=min_stag_r):
                 for leg in cluster.legs:
@@ -1444,11 +1468,8 @@ class BacktestEngine:
                         actions.append({"action": "banker_tp_hit", "price": leg.tp_price})
 
                         # Spawn Moonbag Runner Leg with SL trailed to Breakeven
-                        # BUG-02 FIX: use asset-appropriate SL buffer (5pts for NAS100, $0.20 for Gold)
-                        _runner_spec = get_asset_spec(getattr(leg, "symbol", self.symbol), leg.entry_price)
-                        _runner_sl_buf = self.cfg.trading.get_min_sl_distance(
-                            getattr(leg, "symbol", self.symbol), leg.entry_price
-                        ) if hasattr(self.cfg.trading, "get_min_sl_distance") else (0.20 if "XAU" in self.symbol else 5.0)
+                        _is_gold = "XAU" in getattr(leg, "symbol", self.symbol).upper() or "GOLD" in getattr(leg, "symbol", self.symbol).upper()
+                        _runner_sl_buf = getattr(self.cfg.trading, "xau_breakeven_buffer", 0.10) if _is_gold else 1.0
                         runner_sl = leg.entry_price + _runner_sl_buf
                         runner_leg = TradeLeg(
                             direction=leg.direction, entry_price=leg.entry_price, lot_size=runner_lot,
@@ -1499,12 +1520,8 @@ class BacktestEngine:
                         actions.append({"action": "banker_tp_hit", "price": leg.tp_price})
 
                         # Spawn Moonbag Runner Leg with SL trailed to Breakeven
-                        # BUG-02 FIX: asset-appropriate SL buffer for SELL runner
-                        # BUG-14 FIX: SELL runner TP was 0.0 which can never trigger; use -1.0 sentinel (disabled)
-                        _runner_spec_s = get_asset_spec(getattr(leg, "symbol", self.symbol), leg.entry_price)
-                        _runner_sl_buf_s = self.cfg.trading.get_min_sl_distance(
-                            getattr(leg, "symbol", self.symbol), leg.entry_price
-                        ) if hasattr(self.cfg.trading, "get_min_sl_distance") else (0.20 if "XAU" in self.symbol else 5.0)
+                        _is_gold_s = "XAU" in getattr(leg, "symbol", self.symbol).upper() or "GOLD" in getattr(leg, "symbol", self.symbol).upper()
+                        _runner_sl_buf_s = getattr(self.cfg.trading, "xau_breakeven_buffer", 0.10) if _is_gold_s else 1.0
                         runner_sl = leg.entry_price - _runner_sl_buf_s
                         runner_leg = TradeLeg(
                             direction=leg.direction, entry_price=leg.entry_price, lot_size=runner_lot,

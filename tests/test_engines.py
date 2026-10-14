@@ -131,8 +131,8 @@ def test_xauusd_engine_sessions_and_guards(base_components):
     dt_asian = datetime(2026, 7, 15, 4, 0, tzinfo=timezone.utc)
     assert engine.is_session_active(dt_asian) is False
 
-    # Test London Close Wall Guard (15:50 UTC -> vetoed)
-    dt_london_close = datetime(2026, 7, 15, 15, 50, tzinfo=timezone.utc)
+    # Test US Cash Session Close Cutoff Guard (16:45 UTC -> vetoed)
+    dt_london_close = datetime(2026, 7, 15, 16, 45, tzinfo=timezone.utc)
     assert engine.check_symbol_guards(dt_london_close, {}, 2700.0) is False
 
     # Test G5 Consecutive Loss Guard

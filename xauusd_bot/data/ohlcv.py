@@ -165,5 +165,7 @@ class MultiTFData:
                 pt = info.point
         if not pt:
             from ..utils.asset_specs import get_asset_spec
-            pt = get_asset_spec(self.symbol)["tick_sz"]
+            pt = get_asset_spec(self.symbol).get("tick_sz", 0.01)
+        if not pt or pt <= 0:
+            pt = 0.01
         return (tick.ask - tick.bid) / pt

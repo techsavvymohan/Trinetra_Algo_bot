@@ -34,46 +34,58 @@ class MT5Connector:
                 log.error("MetaTrader5 package is not installed. Please run: pip install MetaTrader5")
                 return False
 
-            init_kwargs = {"timeout": self.cfg.timeout_ms}
-            if self.cfg.path and Path(self.cfg.path).exists():
-                init_kwargs["path"] = self.cfg.path
-            if self.cfg.login:
-                init_kwargs["login"] = self.cfg.login
-            if self.cfg.password:
-                init_kwargs["password"] = self.cfg.password
-            if self.cfg.server:
-                init_kwargs["server"] = self.cfg.server
+            # Priority 1: If an MT5 GUI terminal is already running on desktop, attach to it directly!
+            # This guarantees we never start a separate headless background terminal when GUI is open.
+            ok = False
+            attached_to_gui = False
+            try:
+                if mt5.initialize():
+                    attached_to_gui = True
+                    ok = True
+                    log.info("🖥️ Attached directly to active MT5 GUI desktop application")
+            except Exception:
+                attached_to_gui = False
 
-            ok = mt5.initialize(**init_kwargs)
+            if not attached_to_gui:
+                init_kwargs = {"timeout": self.cfg.timeout_ms}
+                if self.cfg.path and Path(self.cfg.path).exists():
+                    init_kwargs["path"] = self.cfg.path
+                if self.cfg.login:
+                    init_kwargs["login"] = self.cfg.login
+                if self.cfg.password:
+                    init_kwargs["password"] = self.cfg.password
+                if self.cfg.server:
+                    init_kwargs["server"] = self.cfg.server
+
+                ok = mt5.initialize(**init_kwargs)
+                if not ok:
+                    err = mt5.last_error()
+                    log.warning("Direct MT5 initialize failed: %s — trying fallback attach & login...", err)
+                    # Fallback 1: Try attaching to existing running terminal or start path without credential parameters
+                    attached = mt5.initialize(path=self.cfg.path, timeout=self.cfg.timeout_ms) if (self.cfg.path and Path(self.cfg.path).exists()) else mt5.initialize(timeout=self.cfg.timeout_ms)
+                    if not attached:
+                        # Fallback 2: Attach to any active GUI terminal instance
+                        attached = mt5.initialize()
+                    ok = attached
+
             if not ok:
-                err = mt5.last_error()
-                log.warning("Direct MT5 initialize failed: %s — trying fallback attach & login...", err)
-                # Fallback 1: Try attaching to existing running terminal or start path without credential parameters
-                attached = mt5.initialize(path=self.cfg.path, timeout=self.cfg.timeout_ms) if (self.cfg.path and Path(self.cfg.path).exists()) else mt5.initialize(timeout=self.cfg.timeout_ms)
-                if not attached:
-                    # Fallback 2: Attach to any active GUI terminal instance
-                    attached = mt5.initialize()
+                log.error("MT5 initialize failed completely: %s", mt5.last_error())
+                return False
 
-                if attached:
-                    if self.cfg.login and self.cfg.server:
-                        logged_in = mt5.login(
-                            login=self.cfg.login,
-                            password=self.cfg.password,
-                            server=self.cfg.server,
-                            timeout=self.cfg.timeout_ms,
-                        )
-                        if logged_in:
-                            ok = True
-                        else:
-                            login_err = mt5.last_error()
-                            log.error("MT5 login failed for account %s on %s: %s", self.cfg.login, self.cfg.server, login_err)
-                            mt5.shutdown()
-                            return False
-                    else:
-                        ok = True
-                else:
-                    log.error("MT5 initialize failed completely: %s", err)
-                    return False
+            acc = mt5.account_info()
+            if acc and self.cfg.login and getattr(acc, "login", 0) != self.cfg.login:
+                if self.cfg.password and self.cfg.server:
+                    logged_in = mt5.login(
+                        login=self.cfg.login,
+                        password=self.cfg.password,
+                        server=self.cfg.server,
+                        timeout=self.cfg.timeout_ms,
+                    )
+                    if not logged_in:
+                        login_err = mt5.last_error()
+                        log.error("MT5 login failed for account %s on %s: %s", self.cfg.login, self.cfg.server, login_err)
+                        mt5.shutdown()
+                        return False
 
             self._connected = True
             acc = mt5.account_info()

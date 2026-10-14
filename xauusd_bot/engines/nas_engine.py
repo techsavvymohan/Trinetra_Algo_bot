@@ -178,6 +178,7 @@ class Nas100Engine(BaseSymbolEngine):
             stops_level_points=getattr(tc, "deviation_points", 10),
             liquidity_source="m15_swings",
             trend_bias=trend_bias,
+            enable_anti_trap=getattr(tc, "enable_anti_trap_ifvg", True),
             enable_delta_absorption=getattr(tc, "enable_delta_absorption", True),
             enable_hvn_tp_calibration=getattr(tc, "enable_hvn_tp_calibration", True),
             min_sl_distance=self.get_min_sl_distance(current_price, m1_atr),
@@ -194,7 +195,7 @@ class Nas100Engine(BaseSymbolEngine):
         ny_str = ny_dt.strftime("%Y-%m-%d %H:%M:%S NY")
         log.info("[%s] 🎯 Valid Nasdaq 100 Scalp Sequence Detected (US_CASH)! UTC: %s | NY: %s | Broker: %s",
                  self.symbol, utc_str, ny_str, broker_date())
-        log.info(f"[{self.symbol}] Swept: {seq['sweep_direction']} at {seq['swept_level']:.1f} | MSS={seq['mss_level']:.1f} | FVG=[{seq['fvg_low']:.1f}, {seq['fvg_high']:.1f}], Entry={seq['entry_price']:.1f}, SL={seq['sl_price']:.1f}, TP={seq['tp_price']:.1f}")
+        log.info(f"[{self.symbol}] Swept: {seq.get('sweep_direction', 'N/A')} at {seq.get('swept_level', 0.0):.1f} | MSS={seq.get('mss_level', 0.0):.1f} | FVG=[{seq.get('fvg_low', 0.0):.1f}, {seq.get('fvg_high', 0.0):.1f}], Entry={seq['entry_price']:.1f}, SL={seq['sl_price']:.1f}, TP={seq['tp_price']:.1f}")
 
         # Tiered Conviction Grading for Nasdaq:
         # Grade A+ (Unicorn Index Setup: 1.50x) vs Grade A (Normal: 1.00x)

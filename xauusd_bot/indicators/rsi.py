@@ -2,7 +2,7 @@ from typing import List, Optional
 
 
 def rsi(values: List[float], period: int = 14) -> Optional[float]:
-    if len(values) < period + 1:
+    if period <= 0 or len(values) < period + 1:
         return None
     avg_gain, avg_loss = 0.0, 0.0
     for i in range(1, period + 1):
@@ -18,6 +18,6 @@ def rsi(values: List[float], period: int = 14) -> Optional[float]:
         avg_gain = (avg_gain * (period - 1) + max(diff, 0)) / period
         avg_loss = (avg_loss * (period - 1) + max(-diff, 0)) / period
     if avg_loss == 0:
-        return 100.0
+        return 50.0 if avg_gain == 0 else 100.0
     rs = avg_gain / avg_loss
     return 100.0 - (100.0 / (1.0 + rs))

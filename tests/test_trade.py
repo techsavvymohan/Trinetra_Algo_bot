@@ -340,3 +340,75 @@ def test_moc_create_pending_and_confirm_retest():
     assert len(cluster.legs) == 1
     assert cluster.legs[0].status == TradeStatus.OPEN
     order_entry.place_market_order.assert_called_once()
+
+
+def test_moc_drift_guard_blocks_runaway_entry():
+    tm, order_entry = _make_trade_manager()
+    acc = make_account(100000.0)
+    _initialize_daily_loss(tm, acc, 100000.0)
+    sig = make_signal(TradeDirection.BUY)
+
+    cluster = tm.create_pending_retest_cluster(
+        signal=sig,
+        limit_price=2000.0,
+        account=acc,
+        point_value=1.0,
+        contract_size=100,
+        min_lot=0.01,
+        lot_step=0.01,
+    )
+    # Simulate live tick ask jumping to 2004.0 (> 1.5 pt drift from 2000.0)
+    mock_tick = MagicMock()
+    mock_tick.ask = 2004.0
+    mock_tick.bid = 2003.5
+    order_entry.connector.symbol_info_tick.return_value = mock_tick
+    order_entry.config.xau_max_entry_drift_points = 1.50
+
+    ok = tm.confirm_retest_and_enter(
+        cluster=cluster,
+        account=acc,
+        point_value=1.0,
+        contract_size=100,
+        min_lot=0.01,
+        lot_step=0.01,
+    )
+    assert ok is False
+    order_entry.place_market_order.assert_not_called()
+
+
+def test_moc_dynamic_lot_recalibration_on_slight_drift():
+    tm, order_entry = _make_trade_manager()
+    acc = make_account(100000.0)
+    _initialize_daily_loss(tm, acc, 100000.0)
+    sig = make_signal(TradeDirection.BUY)
+    sig.sl_price = 1990.0  # SL distance originally 10 pts (2000 - 1990)
+
+    cluster = tm.create_pending_retest_cluster(
+        signal=sig,
+        limit_price=2000.0,
+        account=acc,
+        point_value=1.0,
+        contract_size=100,
+        min_lot=0.01,
+        lot_step=0.01,
+    )
+    initial_lot = cluster.signal.lot_size
+
+    # Simulate slight drift to 2001.0 (< 1.5 pt drift)
+    mock_tick = MagicMock()
+    mock_tick.ask = 2001.0
+    mock_tick.bid = 2000.5
+    order_entry.connector.symbol_info_tick.return_value = mock_tick
+    order_entry.config.xau_max_entry_drift_points = 1.50
+
+    ok = tm.confirm_retest_and_enter(
+        cluster=cluster,
+        account=acc,
+        point_value=1.0,
+        contract_size=100,
+        min_lot=0.01,
+        lot_step=0.01,
+    )
+    assert ok is True
+    # Distance expanded from 10 to 11 pts, so lot size must be resized smaller
+    assert cluster.signal.lot_size <= initial_lot

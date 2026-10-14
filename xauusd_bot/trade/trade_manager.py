@@ -266,6 +266,53 @@ class TradeManager:
         if not signal:
             return False
 
+        # Guard 1: Tick-level Drift Guard against adverse slippage / runaway candles
+        is_gold = "XAU" in cluster.symbol.upper() or "GOLD" in cluster.symbol.upper()
+        tc = getattr(self.order_entry, "config", None)
+        max_drift = getattr(tc, "xau_max_entry_drift_points", 1.50) if is_gold else getattr(tc, "nas_max_entry_drift_points", 15.0)
+        lim_price = getattr(cluster, "limit_price", signal.entry_price)
+
+        connector = getattr(self.order_entry, "connector", None)
+        tick = connector.symbol_info_tick(cluster.symbol) if connector and hasattr(connector, "symbol_info_tick") else None
+        ask = getattr(tick, "ask", None)
+        bid = getattr(tick, "bid", None)
+        if isinstance(ask, (int, float)) and isinstance(bid, (int, float)) and ask > 0 and bid > 0:
+            curr_p = float(ask) if signal.direction == TradeDirection.BUY else float(bid)
+            drift = (curr_p - lim_price) if signal.direction == TradeDirection.BUY else (lim_price - curr_p)
+            if drift > max_drift:
+                log.warning(
+                    "[%s] 🛡️ Tick Drift Guard: Live price %.2f drifted %.2f pts from limit %.2f (Max: %.2f pts) — Setup Discarded (Chase Avoided)",
+                    cluster.symbol, curr_p, drift, lim_price, max_drift,
+                )
+                cluster.status = TradeStatus.REJECTED
+                if hasattr(self.pyramid_mgr, "_clusters") and cluster in self.pyramid_mgr._clusters:
+                    self.pyramid_mgr._clusters.remove(cluster)
+                return False
+
+            # Guard 2: Dynamic Lot Recalibration to ensure strict adherence to dollar risk budget
+            sl_dist = abs(curr_p - signal.sl_price)
+            if sl_dist > 0:
+                remaining_budget = self.daily_loss.remaining_budget_amount()
+                risk_scale = getattr(cluster, "risk_scale", getattr(signal, "risk_scale", 1.0))
+                new_lot = self.sizer.calculate_lot_size(
+                    account=account,
+                    entry_price=curr_p,
+                    sl_price=signal.sl_price,
+                    direction=signal.direction,
+                    point_value=point_value,
+                    contract_size=contract_size,
+                    min_lot=min_lot,
+                    max_lot=getattr(account, "max_lot", 100.0),
+                    lot_step=lot_step,
+                    remaining_budget=remaining_budget,
+                    max_risk_amount=remaining_budget,
+                    risk_scale=risk_scale,
+                )
+                if new_lot > 0 and new_lot != signal.lot_size:
+                    log.info("[%s] ⚖️ Dynamic Lot Recalibration: Adjusted lot from %.2f to %.2f (Price: %.2f, SL: %.2f)",
+                             cluster.symbol, signal.lot_size, new_lot, curr_p, signal.sl_price)
+                    signal.lot_size = new_lot
+
         leg = self.order_entry.place_market_order(
             signal=signal,
             account=account,
@@ -409,9 +456,9 @@ class TradeManager:
 
             from datetime import datetime, timezone
             now_utc = datetime.now(timezone.utc)
-            if now_utc.weekday() == 1:
-                raw_tue = getattr(cfg_obj, "tuesday_breakeven_trigger_r", 1.40)
-                tue_be = float(raw_tue) if isinstance(raw_tue, (int, float)) else 1.40
+            if now_utc.weekday() == 1 and getattr(cfg_obj, "tuesday_reduced_risk", False):
+                raw_tue = getattr(cfg_obj, "tuesday_breakeven_trigger_r", be_trig)
+                tue_be = float(raw_tue) if isinstance(raw_tue, (int, float)) else be_trig
                 be_trig = max(be_trig, tue_be)
 
             new_be = self.exit_mgr.check_breakeven_ratchet(cluster, current_price, trigger_r=be_trig, buffer_r=be_buf)
@@ -434,8 +481,8 @@ class TradeManager:
             from datetime import datetime, timezone
             now_utc_naive = datetime.now(timezone.utc).replace(tzinfo=None)
             bars_held = int((now_utc_naive - cluster.open_time).total_seconds() / 60.0)
-            raw_max = getattr(cfg_obj, "xau_stagnation_bars", 20)
-            max_stag_bars = int(raw_max) if isinstance(raw_max, (int, float)) else 20
+            raw_max = getattr(cfg_obj, "xau_stagnation_bars", 40)
+            max_stag_bars = int(raw_max) if isinstance(raw_max, (int, float)) else 40
             raw_min_r = getattr(cfg_obj, "xau_stagnation_min_r", 0.30)
             min_stag_r = float(raw_min_r) if isinstance(raw_min_r, (int, float)) else 0.30
             if self.exit_mgr.check_stagnation_exit(cluster, current_price, bars_held, max_bars=max_stag_bars, min_r=min_stag_r):
@@ -556,8 +603,12 @@ class TradeManager:
         # For non-FVG (momentum) trades, require at least 180s holding time and config enablement.
         enable_psar = getattr(cfg_obj, "enable_psar_trailing", True)
         from datetime import datetime, timezone
-        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
-        trade_age_s = (now_utc - cluster.open_time).total_seconds() if cluster.open_time else 999.0
+        now_utc = datetime.now(timezone.utc)
+        if cluster.open_time:
+            c_time = cluster.open_time if cluster.open_time.tzinfo else cluster.open_time.replace(tzinfo=timezone.utc)
+            trade_age_s = (now_utc - c_time).total_seconds()
+        else:
+            trade_age_s = 999.0
 
         if not is_fvg_trade and enable_psar and trade_age_s >= 180.0:
             psar_exit = self.exit_mgr.check_psar_exit(m5_data or m1_data, cluster)

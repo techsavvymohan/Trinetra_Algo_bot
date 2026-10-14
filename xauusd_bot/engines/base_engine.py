@@ -228,8 +228,18 @@ class BaseSymbolEngine(ABC):
 
             # Market-on-Confirmation (MoC) Retest & Fill Verification
             if is_moc_pending and lim_price > 0:
-                fvg_span = abs(fvg_h - fvg_l) if (fvg_h > 0 and fvg_l > 0) else 0.0
                 is_gold = "XAU" in self.symbol.upper() or "GOLD" in self.symbol.upper()
+                if is_gold and getattr(tc, "xau_enable_ny_open_blackout", True):
+                    from ..utils.time_utils import to_ny_time
+                    ny_dt = to_ny_time(now_utc, getattr(tc, "xau_session_timezone", "America/New_York"))
+                    b_start = getattr(tc, "xau_ny_open_blackout_start_min", 28)
+                    b_end = getattr(tc, "xau_ny_open_blackout_end_min", 33)
+                    if ny_dt.hour == 9 and (b_start <= ny_dt.minute <= b_end):
+                        log.debug("[%s] 🛡️ NY Open Blackout: 09:30 cash bell volatility buffer active (%02d:%02d NY) — retest execution paused",
+                                  self.symbol, ny_dt.hour, ny_dt.minute)
+                        continue
+
+                fvg_span = abs(fvg_h - fvg_l) if (fvg_h > 0 and fvg_l > 0) else 0.0
                 tol = max(0.25, fvg_span * fvg_tol_pct) if is_gold else max(1.0, fvg_span * fvg_tol_pct)
                 inv_buf = 0.5 * tol
 
@@ -250,11 +260,20 @@ class BaseSymbolEngine(ABC):
                 if getattr(pc, "retest_touched", False):
                     body = abs(c_bar - o_bar)
                     bar_range = h_bar - l_bar
+                    max_drift = getattr(tc, "xau_max_entry_drift_points", 1.50) if is_gold else getattr(tc, "nas_max_entry_drift_points", 15.0)
 
                     if pc.direction == TradeDirection.BUY:
                         if fvg_l > 0 and c_bar < (fvg_l - inv_buf):
                             log.warning("[%s] 🛡️ MoC Guard: Adverse bar plunged below FVG support (Close: %.2f < FVG Low: %.2f) — Setup Discarded",
                                         self.symbol, c_bar, fvg_l)
+                            self.cluster_mgr.remove(pc)
+                            continue
+
+                        # Drift guard: Close drifted too high above limit price
+                        drift = c_bar - lim_price
+                        if drift > max_drift:
+                            log.warning("[%s] 🛡️ MoC Drift Guard: Close %.2f drifted %.2f pts above FVG limit %.2f (Max: %.2f pts) — Setup Discarded (Chase Avoided)",
+                                        self.symbol, c_bar, drift, lim_price, max_drift)
                             self.cluster_mgr.remove(pc)
                             continue
 
@@ -274,6 +293,14 @@ class BaseSymbolEngine(ABC):
                         if fvg_h > 0 and c_bar > (fvg_h + inv_buf):
                             log.warning("[%s] 🛡️ MoC Guard: Adverse bar spiked above FVG resistance (Close: %.2f > FVG High: %.2f) — Setup Discarded",
                                         self.symbol, c_bar, fvg_h)
+                            self.cluster_mgr.remove(pc)
+                            continue
+
+                        # Drift guard: Close drifted too low below limit price
+                        drift = lim_price - c_bar
+                        if drift > max_drift:
+                            log.warning("[%s] 🛡️ MoC Drift Guard: Close %.2f drifted %.2f pts below FVG limit %.2f (Max: %.2f pts) — Setup Discarded (Chase Avoided)",
+                                        self.symbol, c_bar, drift, lim_price, max_drift)
                             self.cluster_mgr.remove(pc)
                             continue
 

@@ -32,7 +32,7 @@ class PositionSizer:
         min_lot: float = 0.01,
         max_lot: float = 100.0,
         lot_step: float = 0.01,
-        remaining_budget: float = 0.0,
+        remaining_budget: Optional[float] = None,
         max_risk_amount: Optional[float] = None,
         tick_size: float = 0.0,
         risk_scale: float = 1.0,
@@ -77,9 +77,16 @@ class PositionSizer:
         if risk_scale > 0 and risk_scale != 1.0:
             account_risk_amount *= risk_scale
 
-        if max_risk_amount is not None and max_risk_amount > 0:
+        if max_risk_amount is not None:
+            if max_risk_amount <= 0:
+                log.warning("Max risk amount is zero or negative (%.2f) — blocking trade", max_risk_amount)
+                return 0.0
             account_risk_amount = min(account_risk_amount, max_risk_amount)
-        if remaining_budget > 0:
+
+        if remaining_budget is not None:
+            if remaining_budget <= 0:
+                log.warning("Remaining risk budget exhausted (%.2f) — blocking trade", remaining_budget)
+                return 0.0
             account_risk_amount = min(account_risk_amount, remaining_budget)
 
         # Citadel Hard Dollar Risk Governor:

@@ -894,103 +894,10 @@ class XAUUSDBot:
         try:
             self.coordinator.start(mode=mode)
         except KeyboardInterrupt:
-            self.running = False
+            log.info("KeyboardInterrupt received — stopping...")
         finally:
+            self.running = False
             self._shutdown()
-
-        while self.running:
-            try:
-                now = time.time()
-                account_info = self.account.refresh()
-                if not account_info:
-                    time.sleep(poll_s)
-                    continue
-
-                # ── Permanent Institutional Fix: Auto Account-Switch Detection ──
-                current_login = getattr(account_info, "login", 0) or getattr(self.cfg.mt5, "login", 0)
-                if self._active_account_login is not None and current_login != self._active_account_login:
-                    log.warning(
-                        "🔄 MT5 Account Switch Detected: %s -> %s! Performing full in-memory state reset and fresh calibration.",
-                        self._active_account_login, current_login,
-                    )
-                    self.daily_loss.reset()
-                    self.max_dd._peak_equity = account_info.equity
-                    self.max_dd._current_dd_pct = 0.0
-                    self.max_dd._breached = False
-                    self.sizer.initial_balance = account_info.balance
-                    self.daily_loss.calibrate_from_broker(self.connector, account_info)
-                    self._capital_calibrated = True
-                    self._reconcile_broker_positions()
-
-                self._active_account_login = current_login
-
-                if not getattr(self, "_capital_calibrated", False) and account_info and account_info.balance > 0:
-                    self._capital_calibrated = True
-                    self.sizer.initial_balance = account_info.balance
-                    log.info("🎯 Dynamic Capital Auto-Calibration: Locked baseline capital to live MT5 balance: $%.2f", account_info.balance)
-
-                self.daily_loss.update(account_info)
-                self.max_dd.update(account_info.equity)
-
-                if self.daily_loss.kill_switch_engaged() or self.max_dd.kill_switch_engaged():
-                    self._close_all_positions("risk_limit")
-                    log.info("Risk limit reached — waiting")
-                    time.sleep(poll_s * 10)
-                    continue
-
-                if now - last_reconcile_time >= 15.0:
-                    self._reconcile_broker_positions()
-                    last_reconcile_time = now
-
-                if now - last_calendar_update > 3600:
-                    self.news_filter.update_fetch()
-                    last_calendar_update = now
-
-                sess_ok, sess_name = self.session_filter.check()
-                if not sess_ok:
-                    time.sleep(poll_s * 5)
-                    continue
-
-                # Iterate through all configured symbols (XAUUSD & USTECH100M)
-                for symbol in self.symbols:
-                    data_feed = self.data_feeds.get(symbol)
-                    if not data_feed:
-                        continue
-
-                    if now - last_data_update.get(symbol, 0.0) > 5.0:
-                        data_feed.update_all()
-                        last_data_update[symbol] = now
-
-                    spread_tracker = self.spread_trackers.get(symbol)
-                    if spread_tracker:
-                        spread_tracker.update(self.account.current_spread(symbol))
-
-                    data_all = data_feed.all_tfs()
-                    if not data_all:
-                        continue
-
-                    strategy_type = getattr(self.cfg.trading, "strategy_trigger_type", "momentum")
-                    if ("XAU" in symbol or "GOLD" in symbol.upper() or any(idx in symbol.upper() for idx in ("NAS", "USTEC", "TECH", "US100"))) and strategy_type in ("xau_liquidity_sweep_fvg_m1", "liquidity_sweep_fvg"):
-                        self._process_xau_scalp_lifecycle(data_all, symbol, account_info)
-                    else:
-                        hierarchy_result = self.hierarchy.evaluate(data_all, current_session())
-                        signal = self._build_signal(hierarchy_result, data_all, symbol)
-                        if signal:
-                            self._process_signal(signal, account_info, data_all)
-
-                    self._manage_active_trades(data_all, symbol)
-
-
-                self.persistence.save_daily_state(self.daily_loss.state)
-                time.sleep(poll_s)
-
-            except KeyboardInterrupt:
-                self.running = False
-            except Exception as e:
-                log.exception("Unhandled error in main loop: %s", e)
-                time.sleep(poll_s * 5)
-
-        self._shutdown()
 
     def _build_signal(self, hierarchy_result: dict, data_all: dict, symbol: str = "XAUUSD") -> Optional[Signal]:
         # Friday Weekend Guard: block new signals when market is closing or closed
@@ -1341,6 +1248,11 @@ class XAUUSDBot:
         min_lot = self.account.min_lot(symbol) if hasattr(self.account, "min_lot") else 0.01
         lot_step = self.account.lot_step(symbol) if hasattr(self.account, "lot_step") else 0.01
 
+        # Spread & News filter checks
+        spread_filter = self.spread_filters.get(symbol, self.spread_filter)
+        spread_ok, spread_msg = spread_filter.check() if (spread_filter and hasattr(spread_filter, "check")) else (True, "OK")
+        news_ok, news_msg = self.news_filter.check(symbol) if (self.news_filter and hasattr(self.news_filter, "check")) else (True, "OK")
+
         # 1. Manage in-memory pending setups (Market-on-Confirmation) and legacy pending orders
         fvg_tol_pct = getattr(tc, "fvg_adaptive_retest_tolerance_pct", 0.25)
         for pc in list(pending_clusters):
@@ -1377,8 +1289,17 @@ class XAUUSDBot:
 
             # ── Market-on-Confirmation (MoC) Retest & Fill Verification ──
             if is_moc_pending and lim_price > 0:
+                is_gold = ("XAU" in symbol.upper() or "GOLD" in symbol.upper())
+                if is_gold and getattr(tc, "xau_enable_ny_open_blackout", True):
+                    b_start = getattr(tc, "xau_ny_open_blackout_start_min", 28)
+                    b_end = getattr(tc, "xau_ny_open_blackout_end_min", 33)
+                    if ny_dt.hour == 9 and (b_start <= ny_dt.minute <= b_end):
+                        log.debug("[%s] 🛡️ NY Open Blackout: 09:30 cash bell volatility buffer active (%02d:%02d NY) — retest execution paused",
+                                  symbol, ny_dt.hour, ny_dt.minute)
+                        continue
+
                 fvg_span = abs(fvg_h - fvg_l) if (fvg_h > 0 and fvg_l > 0) else 0.0
-                tol = max(0.25, fvg_span * fvg_tol_pct) if ("XAU" in symbol.upper() or "GOLD" in symbol.upper()) else max(0.00008, fvg_span * fvg_tol_pct)
+                tol = max(0.25, fvg_span * fvg_tol_pct) if is_gold else max(0.00008, fvg_span * fvg_tol_pct)
                 inv_buf = 0.5 * tol
 
                 c_bar = m1_data.close[-1]
@@ -1398,12 +1319,21 @@ class XAUUSDBot:
                 if getattr(pc, "retest_touched", False):
                     body = abs(c_bar - o_bar)
                     bar_range = h_bar - l_bar
+                    max_drift = getattr(tc, "xau_max_entry_drift_points", 1.50) if is_gold else getattr(tc, "nas_max_entry_drift_points", 15.0)
 
                     if pc.direction == TradeDirection.BUY:
                         # MoC Guard: If adverse red bar plunged straight through FVG support -> cancel setup instantly!
                         if fvg_l > 0 and c_bar < (fvg_l - inv_buf):
                             log.warning("[%s] 🛡️ MoC Guard: Adverse M1 bar penetrated below FVG support (Close: %.2f < FVG Low: %.2f) — Setup Discarded! Zero broker risk.",
                                         symbol, c_bar, fvg_l)
+                            self.cluster_mgr.remove(pc)
+                            continue
+
+                        # Drift guard: Close drifted too high above limit price
+                        drift = c_bar - lim_price
+                        if drift > max_drift:
+                            log.warning("[%s] 🛡️ MoC Drift Guard: Close %.2f drifted %.2f pts above FVG limit %.2f (Max: %.2f pts) — Setup Discarded (Chase Avoided)",
+                                        symbol, c_bar, drift, lim_price, max_drift)
                             self.cluster_mgr.remove(pc)
                             continue
 
@@ -1425,6 +1355,14 @@ class XAUUSDBot:
                         if fvg_h > 0 and c_bar > (fvg_h + inv_buf):
                             log.warning("[%s] 🛡️ MoC Guard: Adverse M1 bar penetrated above FVG resistance (Close: %.5f > FVG High: %.5f) — Setup Discarded! Zero broker risk.",
                                         symbol, c_bar, fvg_h)
+                            self.cluster_mgr.remove(pc)
+                            continue
+
+                        # Drift guard: Close drifted too low below limit price
+                        drift = lim_price - c_bar
+                        if drift > max_drift:
+                            log.warning("[%s] 🛡️ MoC Drift Guard: Close %.2f drifted %.2f pts below FVG limit %.2f (Max: %.2f pts) — Setup Discarded (Chase Avoided)",
+                                        symbol, c_bar, drift, lim_price, max_drift)
                             self.cluster_mgr.remove(pc)
                             continue
 
@@ -1612,16 +1550,29 @@ class XAUUSDBot:
         default_pv = 0.1 if is_index else 0.01
         pv = self.account.point_size(symbol) if hasattr(self.account, "point_size") else default_pv
 
-        # London H1 Macro Trend Alignment Guard
-        lon_trend_bias = None
-        if in_london and not is_index:
-            req_h1 = getattr(tc, "xau_london_require_h1_trend", True)
-            early_london = (h_utc == 7 and m_utc >= 45) or (h_utc == 8 and m_utc <= 30)
-            if early_london or req_h1:
+        # Macro H1 Trend Alignment Guard (24/5 All Sessions + London Specific)
+        macro_trend_bias = None
+        if not is_index:
+            req_h1_all = getattr(tc, "xau_require_h1_trend", True)
+            req_h1_lon = getattr(tc, "xau_london_require_h1_trend", True)
+            early_london = in_london and ((h_utc == 7 and m_utc >= 45) or (h_utc == 8 and m_utc <= 30))
+            if req_h1_all or early_london or (in_london and req_h1_lon):
                 h1_data = data_all.get("H1")
-                if h1_data and hasattr(self, "hierarchy") and hasattr(self.hierarchy, "bias"):
-                    h1_b = self.hierarchy.bias.detect_bias(h1_data)
-                    lon_trend_bias = TradeDirection.BUY if h1_b == Bias.BULLISH else (TradeDirection.SELL if h1_b == Bias.BEARISH else None)
+                if h1_data and len(h1_data.close) >= 21:
+                    from .indicators.moving_averages import ema
+                    ema9 = ema(h1_data.close, 9)
+                    ema21 = ema(h1_data.close, 21)
+                    if ema9 is not None and ema21 is not None:
+                        macro_trend_bias = TradeDirection.BUY if ema9 > ema21 else TradeDirection.SELL
+
+        # NY Open Opening-Bell Blackout Guard (09:28 - 09:33 NY)
+        if is_gold and getattr(tc, "xau_enable_ny_open_blackout", True):
+            b_start = getattr(tc, "xau_ny_open_blackout_start_min", 28)
+            b_end = getattr(tc, "xau_ny_open_blackout_end_min", 33)
+            if ny_dt.hour == 9 and (b_start <= ny_dt.minute <= b_end):
+                log.debug("[%s] 🛡️ NY Open Blackout: 09:30 cash bell volatility buffer active (%02d:%02d NY) — signals vetoed",
+                          symbol, ny_dt.hour, ny_dt.minute)
+                return
 
         seq = self.trigger.detect_xau_scalp_sequence(
             m15_data=m15_closed,
@@ -1636,10 +1587,12 @@ class XAUUSDBot:
             point_value=pv,
             stops_level_points=getattr(tc, "deviation_points", 10),
             liquidity_source="m15_swings",
-            trend_bias=lon_trend_bias,
+            trend_bias=macro_trend_bias,
+            enable_anti_trap=getattr(tc, "enable_anti_trap_ifvg", True),
             enable_delta_absorption=getattr(tc, "enable_delta_absorption", True),
             enable_hvn_tp_calibration=getattr(tc, "enable_hvn_tp_calibration", True),
             min_sl_distance=tc.get_min_sl_distance(symbol, current_price, m1_atr) if hasattr(tc, "get_min_sl_distance") else 0.0,
+            min_displacement_points=getattr(tc, "xau_min_displacement_points", 0.0),
         )
         if not seq:
             return
@@ -1714,9 +1667,9 @@ class XAUUSDBot:
             log.info("[%s] 🎯 Conviction Bet Sizing: grade=%s score=%s -> scale=%.2fx",
                      symbol, getattr(sig, "grade", "B"), getattr(sig, "score", 0), conv_scale)
 
-        # Tuesday Judas Swing Guard: Scale risk on Tuesdays
-        if now_utc.weekday() == 1 and getattr(tc, "tuesday_reduced_risk", True):
-            tue_scale = getattr(tc, "tuesday_risk_scale", 0.80)
+        # Tuesday Microstructure Guard: Scale risk on Tuesdays only if explicitly enabled
+        if now_utc.weekday() == 1 and getattr(tc, "tuesday_reduced_risk", False):
+            tue_scale = getattr(tc, "tuesday_risk_scale", 1.00)
             risk_scale *= tue_scale
             log.info("[%s] 🛡️ Tuesday Microstructure Guard active: Scaling base risk by %.2fx",
                      symbol, tue_scale)
@@ -1741,7 +1694,7 @@ class XAUUSDBot:
                     self._xau_london_trades_today = getattr(self, "_xau_london_trades_today", 0) + 1
                 elif in_ny_core:
                     self._xau_ny_trades_today = getattr(self, "_xau_ny_trades_today", 0) + 1
-                fmt = ".5f" if is_fx else ".2f"
+                fmt = ".1f" if is_index else ".2f"
                 log.info(f"[{symbol}] 🎯 FVG Zone Registered (Awaiting MoC Retest): {sig.direction.value} at {seq['entry_price']:{fmt}} (SL={seq['sl_price']:{fmt}}, TP={seq['tp_price']:{fmt}})")
         else:
             cluster = self.trade_mgr.execute_limit_signal(
@@ -1762,7 +1715,7 @@ class XAUUSDBot:
                     self._xau_london_trades_today = getattr(self, "_xau_london_trades_today", 0) + 1
                 elif in_ny_core:
                     self._xau_ny_trades_today = getattr(self, "_xau_ny_trades_today", 0) + 1
-                fmt = ".5f" if is_fx else ".2f"
+                fmt = ".1f" if is_index else ".2f"
                 log.info(f"[{symbol}] 📥 Pending FVG Limit Order registered in cluster {cluster.cluster_id[:8]} ({sess_name}): {sig.direction.value} at {seq['entry_price']:{fmt}} (SL={seq['sl_price']:{fmt}}, TP={seq['tp_price']:{fmt}})")
 
     def _manage_active_trades(self, data_all: dict, symbol: str = ""):
