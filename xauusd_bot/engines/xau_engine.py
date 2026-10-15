@@ -298,7 +298,7 @@ class XauusdEngine(BaseSymbolEngine):
             disp_atr = max(base_lon_atr, vr.min_atr_mult)
             disp_body = max(base_lon_body, vr.min_body_ratio)
 
-        target_r = vr.target_r
+        target_r = getattr(tc, "xau_target_r", vr.target_r)
         pv = self.account.point_size(self.symbol) if hasattr(self.account, "point_size") else 0.01
 
         # Macro H1 Trend Alignment Guard (24/5 All Sessions + London Specific)

@@ -444,8 +444,8 @@ class TradeManager:
             if hasattr(cfg_obj, "get_breakeven_trigger_r"):
                 raw_trig = cfg_obj.get_breakeven_trigger_r(sym)
             if not isinstance(raw_trig, (int, float)):
-                raw_trig = getattr(cfg_obj, "xau_breakeven_trigger_r", 1.75)
-            be_trig = float(raw_trig) if isinstance(raw_trig, (int, float)) else 1.75
+                raw_trig = getattr(cfg_obj, "xau_breakeven_trigger_r", 0.70)
+            be_trig = float(raw_trig) if isinstance(raw_trig, (int, float)) else 0.70
 
             raw_buf = None
             if hasattr(cfg_obj, "get_breakeven_buffer_r"):

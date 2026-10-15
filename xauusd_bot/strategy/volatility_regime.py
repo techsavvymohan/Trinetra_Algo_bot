@@ -49,8 +49,8 @@ class RegimeState:
     score: float = 0.0               # composite score in [-1, +1]
 
     # Adapted trade parameters
-    target_r: float = 2.0            # TP in R-multiples
-    be_trigger_r: float = 1.50       # move SL to BE when price hits this R
+    target_r: float = 1.40            # TP in R-multiples
+    be_trigger_r: float = 0.70       # move SL to BE when price hits this R
     be_buffer_r: float = 0.10        # small profit buffer above entry at BE
     min_atr_mult: float = 0.60       # displacement minimum ATR multiplier
     min_body_ratio: float = 0.60     # displacement minimum body ratio
@@ -91,22 +91,22 @@ class VolatilityRegimeEngine:
 
     # Output parameters per regime
     # TRENDING (composite >= 0.25): high-expansion breakout months
-    trending_target_r: float = 2.0
-    trending_be_trigger_r: float = 1.50
+    trending_target_r: float = 1.40
+    trending_be_trigger_r: float = 0.70
     trending_be_buffer_r: float = 0.10
     trending_min_atr_mult: float = 0.60
     trending_min_body_ratio: float = 0.60
 
     # NEUTRAL (composite -0.20 to +0.25): optimal baseline standard
-    neutral_target_r: float = 2.0
-    neutral_be_trigger_r: float = 1.50
+    neutral_target_r: float = 1.40
+    neutral_be_trigger_r: float = 0.70
     neutral_be_buffer_r: float = 0.10
     neutral_min_atr_mult: float = 0.60
     neutral_min_body_ratio: float = 0.60
 
     # COMPRESSED (composite <= -0.20): optimal baseline standard
-    compressed_target_r: float = 2.0
-    compressed_be_trigger_r: float = 1.50
+    compressed_target_r: float = 1.40
+    compressed_be_trigger_r: float = 0.70
     compressed_be_buffer_r: float = 0.10
     compressed_min_atr_mult: float = 0.60
     compressed_min_body_ratio: float = 0.60

@@ -83,9 +83,9 @@ class TradingConfig:
     pyramid_add_trigger_r: float = 0.5
     pyramid_initial_risk_pct: float = 0.85
 
-    partial_take_profit_r: float = 1.0
+    partial_take_profit_r: float = 0.75
     partial_close_pct: float = 25.0
-    partial_tp_tranche1_r: float = 1.0
+    partial_tp_tranche1_r: float = 0.75
     partial_tp_tranche1_pct: float = 25.0
     partial_tp_tranche2_r: float = 2.2
     partial_tp_tranche2_pct: float = 35.0
@@ -170,7 +170,7 @@ class TradingConfig:
     xau_retest_max_bars: int = 8  # Maximum M1 bars to wait for confirmed retest
     xau_strict_killzones: bool = True  # London (07-09 UTC) & NY Core (13:30-16:30 UTC)
     xau_session_cutoff_hour: int = 24  # Cutoff hour (UTC) for XAU signals (24 = disabled / Full-Day Flagship; 13 = London only)
-    xau_target_r: float = 2.0
+    xau_target_r: float = 1.40
     xau_risk_per_trade: float = 0.0085
     xau_max_trades_per_session: int = 2  # Option A: 2 trades per session
     max_daily_trades: int = 4            # Option A: up to 4 trades per day across portfolio
@@ -189,10 +189,10 @@ class TradingConfig:
     xau_early_invalidation_exit: bool = False
     xau_enable_pre_fill_guard: bool = True
     xau_breakeven_ratchet_enabled: bool = True
-    xau_breakeven_trigger_r: float = 1.00
+    xau_breakeven_trigger_r: float = 0.70
     xau_breakeven_buffer_r: float = 0.10
     xau_stagnation_exit_enabled: bool = True
-    xau_stagnation_bars: int = 20  # Fast 20-bar stagnation defense for Gold (Nasdaq uses nas_stagnation_bars=40)
+    xau_stagnation_bars: int = 40  # 40-bar (40-min) stagnation defense for Gold (aligned with Nasdaq nas_stagnation_bars=40)
     xau_stagnation_min_r: float = 0.40
     xau_partial_close_enabled: bool = True  # Enable 25% @ 1.0R + Breakeven ratchet ladder for Gold
     xau_london_displacement_atr_mult: float = 0.75
@@ -260,7 +260,7 @@ class TradingConfig:
 
     # ── XAU Dynamic Breakeven & Multi-Order Risk Engine ──────────────────────────
     xau_breakeven_enabled: bool = True
-    xau_breakeven_r: float = 1.00  # Move to BE at 1.0R profit for early risk-free status
+    xau_breakeven_r: float = 0.70  # Move to BE at 0.70R profit for early risk-free status
     xau_breakeven_buffer: float = 0.10
     xau_prevent_duplicate_pending: bool = True
     xau_h4_bias_guard: bool = False
@@ -373,7 +373,7 @@ class TradingConfig:
         spec = get_asset_spec(symbol)
         if spec["is_index"]:
             return getattr(self, "nas_breakeven_trigger_r", 1.25)
-        return getattr(self, "xau_breakeven_trigger_r", 1.50)
+        return getattr(self, "xau_breakeven_trigger_r", 0.70)
 
     def get_breakeven_buffer_r(self, symbol: str = "XAUUSD") -> float:
         from .utils.asset_specs import get_asset_spec

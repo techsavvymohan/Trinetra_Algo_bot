@@ -1314,7 +1314,7 @@ class BacktestEngine:
                 be_trig = self.cfg.trading.get_breakeven_trigger_r(sym)
                 be_buf = self.cfg.trading.get_breakeven_buffer_r(sym) if hasattr(self.cfg.trading, "get_breakeven_buffer_r") else 0.10
             else:
-                be_trig = getattr(self.cfg.trading, "xau_breakeven_trigger_r", 1.50)
+                be_trig = getattr(self.cfg.trading, "xau_breakeven_trigger_r", 0.70)
                 be_buf = getattr(self.cfg.trading, "xau_breakeven_buffer_r", 0.10)
 
             # Tuesday Breakeven Cushioning: prevent premature wick-outs in compression
