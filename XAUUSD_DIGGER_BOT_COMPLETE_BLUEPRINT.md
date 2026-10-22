@@ -500,20 +500,30 @@ sequenceDiagram
   +-----------------------------------+-----------------------------------+---------------------------+
   | TRANCHE                           | TARGET / TRIGGER                  | ACTION TAKEN              |
   +-----------------------------------+-----------------------------------+---------------------------+
-  | Tranche 1 (Cash Extraction)       | +1.00R (Risk Distance)            | Bank 25% Volume into Cash |
-  | Breakeven Stop Ratchet            | Concurrently with Tranche 1       | SL -> Entry Price + $0.10 |
-  | Tranche 2 (Core Target)           | +2.20R (Structure Target)         | Bank 35% Volume into Cash |
-  | Tranche 3 (The Moonbag Runner)    | Chandelier ATR Trail (3.0 Mult)   | Trail 40% Volume to Trend |
+  | Tranche 1 (Cash Extraction)       | Dynamic T1 (+0.75R to +1.00R)     | Bank 25% Volume into Cash |
+  | Breakeven Stop Ratchet            | +0.70R (Gold) / +1.50R (Nasdaq)   | SL -> Entry Price + Buffer|
+  | Tranche 2 (Core Target)           | +2.00R to +2.20R (Structure)      | Bank 35% Volume into Cash |
+  | Tranche 3 (The Moonbag Runner)    | Dynamic ATR Chandelier Stop       | Trail remaining volume    |
   +-----------------------------------+-----------------------------------+---------------------------+
   ```
+
+- **Asymmetric Smart Protection Exit Architecture**:
+  - **Gold Out-of-Window Invalidation Guard (`xau_early_invalidation_exit = True`, `xau_invalidation_outside_window_only = True`)**:
+    When a Gold trade holds past the active session boundaries (12:30–5:30 PM or 7:00–10:00 PM IST), the algorithm actively monitors for structural breakdown (opposite displacement + MSS or adverse institutional delta volume spike). If an invalidation occurs off-session, the bot immediately executes a flat market exit (`STRUCTURAL_INVALIDATION`), preventing overnight profit erosion.
+  - **Nasdaq Runner Space**:
+    To maximize convexity on index volatility, Nasdaq trades are granted full overnight breathing room with an unchoked 1.50R Breakeven ratchet and trailing stops, capturing multi-R expansion runs without premature cuts.
+  - **Index Margin Clamping (`nas_max_lot = 0.05`)**:
+    Restricts Nasdaq index positions to a hard cap of 0.05 lots and 25% free margin, eliminating MT5 broker `10019 (No Money)` rejections on prop-firm leverage structures.
+  - **NY Open Cash Bell Blackout**:
+    Vetoes signals and retest executions during 09:28–09:33 NY (Gold) and 09:30–09:34 NY (Nasdaq) to sidestep opening-bell volatility traps.
 
 ---
 
 ### 4.13 Step 13: Stagnation Defense & Microstructure Circuit Breakers
 - **Source Code**: `xauusd_bot/trade/trade_manager.py`, `xauusd_bot/risk/daily_loss.py`, `xauusd_bot/risk/max_dd.py`
-- **Stagnation Exit Invariant**:
-  If a trade has been active for 20 M1 bars (`xau_stagnation_exit_bars = 20`) and has failed to achieve at least $+0.30\text{R}$ unrealized profit:
-  $$\text{Bars Active} \ge 20 \quad \text{and} \quad \text{Unrealized R} < 0.30 \implies \text{Market Close Immediately}$$
+- **Dynamic Post-Loss Cooldown**:
+  - Gold: 60 minutes cooldown post-loss/cut to let structural chop clear.
+  - Nasdaq: 15 minutes cooldown post-loss, aligning with fast-moving US cash momentum.
 - **Daily Loss Circuit Breaker**:
   If daily realized + unrealized loss reaches **4.5%** (`daily_limit_pct = 4.5`), the `DailyLossTracker` engages an un-overrideable software kill-switch, blocking all entries until the daily rollover at 00:00 UTC.
 - **Maximum Account Drawdown Circuit Breaker**:
@@ -994,7 +1004,7 @@ pytz==2024.1
 | **`pydantic`** | `2.7.4` | Runtime type enforcement and model validation. Ensures that every trade signal, execution order, and market regime object adheres strictly to invariant schemas (`TradeSignal`, `TradeLeg`, `TradeRecord`). |
 | **`python-dotenv`** | `1.0.1` | Follows 12-Factor App methodology. Loads sensitive credentials (`MT5_LOGIN`, `MT5_PASSWORD`, `MT5_SERVER`, `TELEGRAM_BOT_TOKEN`) from `.env` files into runtime memory without hardcoding secrets in code. |
 | **`rich` & `colorlog`** | `13.7.1` / `6.8.2` | High-fidelity terminal telemetry. Outputs real-time ANSI-colored execution logs, tabular risk dashboards, and visual trade execution receipts without degrading event-loop performance. |
-| **`pytest`** | `8.2.2` | Industrial verification framework. Executes the 368-case automated test suite, verifying mathematical formulas, edge cases, partial-close logic, and risk limiters before capital is deployed. |
+| **`pytest`** | `8.2.2` | Industrial verification framework. Executes the 386-case automated test suite, verifying mathematical formulas, edge cases, partial-close logic, and risk limiters before capital is deployed. |
 | **`httpx` & `requests`** | `0.27.0` / `2.32.3` | Asynchronous and synchronous HTTP clients. Pulls external economic calendar events (ForexFactory / FXStreet APIs) for the 30-minute high-impact news blackout filter and pushes emergency Telegram alerts. |
 
 ---
@@ -1116,7 +1126,7 @@ To construct this trading engine from an empty directory into a fully operationa
      - Models realistic spread ($0.12\text{ pts}$), commission ($0.06\text{ pts}$ round-turn), and execution slippage ($0.15\text{ pts}$ on market orders).
      - Tracks exact equity curve, peak equity, drawdown, Sharpe ratio, and Calmar ratio.
   2. Verification Test Suite:
-     - 368 automated tests covering unit math, edge cases, partial-close state transitions, and broker failure recovery. Run via `pytest`.
+     - 386 automated tests covering unit math, edge cases, partial-close state transitions, and broker failure recovery. Run via `pytest`.
 
 ---
 
@@ -1203,7 +1213,7 @@ Before switching `LIVE_TRADING=true` and connecting real capital, the lead engin
 |                        PRE-FLIGHT LAUNCH CHECKLIST                                |
 +-----------------------------------------------------------------------------------+
 |  [ ] 1. ENVIRONMENT ISOLATION: Dedicated venv with Python 3.11.9 confirmed.       |
-|  [ ] 2. TEST SUITE VERIFICATION: pytest outputs 368/368 passing (100% pass rate). |
+|  [ ] 2. TEST SUITE VERIFICATION: pytest outputs 386/386 passing (100% pass rate). |
 |  [ ] 3. BROKER SYMBOL AUDIT: Digits (2 or 3), point, and tick size verified.     |
 |  [ ] 4. LATENCY CHECK: mt5.terminal_info() reports ping < 5.0 ms to broker server.|
 |  [ ] 5. TIME SYNCHRONIZATION: Local OS clock synchronized via NTP (< 50ms drift). |

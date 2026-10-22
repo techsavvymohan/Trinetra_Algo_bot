@@ -71,14 +71,15 @@ Ek profitable trader ya bot ki 50% kamyabi is baat par depend karti hai ki woh *
 * **Action**: Trading strictly **BLOCK** ho jaati hai.
 * **Reason**: Chop/sideways market mein koi trend ya clear liquidity displacement nahi hoti; wahan sirf fakeouts aur stop-loss hunting hoti hai.
 
-### 3. Session Timing & Killzones
-Bot 24 ghante blind trading nahi karta. Yeh sirf un ghanton mein active hota hai jab institutional volume aur bank participation sabse zyada hoti hai:
+### 3. Session Timing & Killzones (Authentic Liquidity Windows)
+Bot 24 ghante blind trading nahi karta. Yeh sirf un ghanton mein active hota hai jab institutional volume aur interbank bank participation peak par hoti hai:
 * **Gold (XAUUSD)**:
-  * **London Open Killzone**: 07:45 UTC se 09:30 UTC *(Indian Time: ~1:15 PM se 3:00 PM)*
-  * **New York Core Killzone**: 13:00 UTC se 15:00 UTC *(Indian Time: ~6:30 PM se 8:30 PM)*
+  * **London Session Window**: 07:00 UTC se 12:00 UTC *(Indian Time: 12:30 PM se 5:30 PM IST)*
+  * **New York Session Window**: 13:30 UTC se 16:30 UTC *(Indian Time: 7:00 PM se 10:00 PM IST)*
+  * *NY Opening Bell Blackout*: 09:28–09:33 NY time (13:28–13:33 UTC) par cash open whipsaws se bachne ke liye trades strictly pause rehte hain.
 * **Nasdaq (NAS100 / USTECH100)**:
-  * **Afternoon Continuation Killzone**: 15:45 UTC se 20:00 UTC *(Indian Time: ~9:15 PM se 1:30 AM)*
-  * *Note*: US market open (13:30–15:30 UTC) ke shuruati 2 ghante Nasdaq avoid kiya jaata hai kyunki tab institutional whip aur spread manipulation hoti hai. Bot tab entry leta hai jab market afternoon mein solid one-way momentum pakad leta hai.
+  * **US Cash Session Window**: 13:30 UTC se 16:30 UTC *(Indian Time: 7:00 PM se 10:00 PM IST)*
+  * *Opening Volatility Blackout*: 09:30–09:34 NY time (13:30–13:34 UTC) par opening spike manipulation se bachne ke liye limit entry pause rehti hai.
 
 ---
 
@@ -289,17 +290,39 @@ Bot ke backtest aur live stats mein 9/9 green months aane ka ek bohot bada reaso
 
 ---
 
+## ⚡ Step 6.1: Asymmetric Smart Protection Exit Architecture (Naya Upgrade)
+
+Exit management mein bot ek sophisticated **Asymmetric Principle** follow karta hai jo Gold aur Nasdaq ke alag-alag nature ko respect karta hai:
+
+### 1. Gold (`XAUUSD`) Out-of-Window Structural Invalidation Guard:
+* **Inside Allowed Window (12:30–5:30 PM & 7:00–10:00 PM IST)**:
+  * Trade ko full breathing room milta hai. Breakeven ratchet +0.70R par lock hota hai aur standard +1.40R TP ya runner achieve hota hai.
+* **Outside Allowed Window (5:30 PM ya 10:00 PM IST ke baad holding trade)**:
+  * Agar session band hone ke baad trade chal rahi ho aur market mein opposite Market Structure Shift (MSS) ya adverse institutional delta spike aaye:
+  * Bot turant trade ko **flat cut** kar deta hai (`STRUCTURAL_INVALIDATION`).
+  * *Faayda*: Isse overnight chop decay aur bewajah ke -$36+ drawdown se account 100% bachta hai (jaise 22 Oct ko loss -$36 se ghat kar sirf -$3.66 par cut ho gaya).
+
+### 2. Nasdaq (`NAS100`) Runner Freedom & Margin Clamping:
+* **Unchoked Runners**: Nasdaq ko aggressive trailing stop se tight nahi kiya jata; Breakeven ratchet (+1.50R trigger) aur wide trailing stops ke sath index ko overnight bade runs (+50 se +100+ points) deliver karne ki full freedom milti hai.
+* **Index Lot Clamping (`nas_max_lot = 0.05`)**: MT5 broker par index leverage margin crash (`10019 No Money` error) ko rokne ke liye har order ko 0.05 lot aur 25% free margin cap par clamp kiya gaya hai.
+* **Decoupled Post-Loss Cooldown**: Gold loss ke baad 60 mins cooldown leta hai (market settle hone ke liye), jabki fast-moving Nasdaq sirf 15 mins cooldown leta hai.
+
+---
+
 ## 📊 Summary Comparison: XAUUSD (Gold) vs NAS100 (Nasdaq)
 
 | Feature | XAUUSD (Gold Flagship) | NAS100 (Nasdaq Antifragile) |
 | :--- | :--- | :--- |
-| **Trading Killzone** | London (07:45-09:30) & NY (13:00-15:00 UTC) | Afternoon Continuation (15:45-20:00 UTC) |
-| **Trend Filter** | H1 50/200 EMA + Choppiness Index | H1 EMA 50 strict trend alignment |
+| **Trading Windows** | London (12:30–5:30 PM) & NY (7:00–10:00 PM IST) | US Cash Open (7:00–10:00 PM IST) |
+| **Opening Bell Blackout** | 09:28–09:33 NY (13:28–13:33 UTC) | 09:30–09:34 NY (13:30–13:34 UTC) |
+| **Trend Confluence Filter** | H1 EMA 50/200 + M15 Momentum Alignment | H1 EMA 50/9 + M15 Confluence |
 | **FVG Limit Order Patience**| 8 Bars (8 Minutes) | 15 Bars (15 Minutes) |
-| **Breakeven Trigger** | +1.00R (+1.40R on Tuesday) | +1.25R (Stable Parameter Plateau) |
-| **Trade Stagnation Timeout**| 20 Bars (Exit if no momentum in 20 mins) | 40 Bars (Index needs consolidation room) |
+| **Breakeven Ratchet** | Trigger: **+0.70R** (Buffer: +0.10R) | Trigger: **+1.50R** (Buffer: +0.10R) |
+| **Target RR** | **1:1.40** (Dynamic Volatility Scaled) | **1:2.00** + Moonbag Runner |
+| **Out-of-Window Protection**| ⚡ **Early MSS Invalidation Cut Active** | Natural Breathing Room for Overnight Runners |
+| **Post-Loss Cooldown** | **60 Minutes** (Anti-Revenge Market Reset) | **15 Minutes** (Fast Momentum Catchup) |
+| **Lot Clamping / Margin** | Scaled to 0.85%–1.50% Equity Risk | Hard Cap **0.05 Lots** (Zero 10019 Error) |
 | **Consecutive Loss Cap**| Governed by Daily 4.5% Cap | Hard 2 consecutive losses per day cutoff |
-| **Unicorn Kelly Sizing** | Up to **$2.60\times$** Base Risk | Up to **$2.40\times$** Base Risk |
 
 ---
 

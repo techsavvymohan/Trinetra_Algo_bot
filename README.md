@@ -10,6 +10,7 @@
 [![Genuine M1 Bars](https://img.shields.io/badge/Data-487%2C972%20Real%20M1%20Bars-4CAF50?style=for-the-badge&logo=databricks&logoColor=white)]()
 [![Win Rate](https://img.shields.io/badge/Win%20Rate-76.27%25%20(354%20Trades)-00ACC1?style=for-the-badge&logo=target&logoColor=white)]()
 [![Profit Factor](https://img.shields.io/badge/Profit%20Factor-3.08%20(PF)-FFB300?style=for-the-badge&logo=chartmogul&logoColor=white)]()
+[![Tests](https://img.shields.io/badge/Tests-386%20Passed%20(100%25)-brightgreen?style=for-the-badge&logo=pytest&logoColor=white)]()
 [![Monte Carlo](https://img.shields.io/badge/Monte%20Carlo-15%2C000%20Paths%20(%3C0.0001%25%20Ruin)-9C27B0?style=for-the-badge&logo=dice&logoColor=white)]()
 [![Prop Firms](https://img.shields.io/badge/Prop%20Firms-FTMO%20%7C%20FundedNext%20%7C%20The5%25ers-FF6F00?style=for-the-badge&logo=cashapp&logoColor=white)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-gray?style=for-the-badge&logo=opensourceinitiative&logoColor=white)](https://opensource.org/licenses/MIT)
@@ -168,10 +169,14 @@ flowchart TB
 - **Grade A Normal ($1.00\times$ Base Risk)**: Standard sweeps without multi-confluence.
 - *Result*: **40.8% reduction in peak drawdown** with under 4% profit impact.
 
-### 4. 3-Tranche Liquidity Harvesting
-- **Tranche 1 (Cash Extraction)**: Closes 25% volume at **+1.00R** and ratchets SL to Entry + $0.10.
-- **Tranche 2 (Core Structural Target)**: Closes 35% volume at **+2.20R**.
-- **Tranche 3 (The Moonbag Runner)**: Removes static TP on the remaining 40% volume and trails a **3.0x ATR Chandelier stop**, capturing runaway macro trends.
+### 4. Asymmetric Smart Protection Exit Architecture
+- **Gold Intra-Window vs Out-of-Window Decoupling**:
+  - *Inside Session Windows (12:30–5:30 PM & 7:00–10:00 PM IST)*: Natural room to breathe for full +1.40R TP with 2-tranche liquidity harvesting and Breakeven ratchet (+0.70R).
+  - *Outside Session Windows (Holding past window close)*: **Early Structural Invalidation Guard** (`xau_early_invalidation_exit = True`). If opposite displacement + MSS or adverse institutional delta occurs while holding off-session, the bot exits immediately to protect locked profits and prevent overnight decay.
+- **Nasdaq Runner Preservation**: Unchoked natural breathing space with 1.50R Breakeven ratchet and trailing ATR stops, capturing multi-R overnight runners.
+- **Index Margin Clamping (`nas_max_lot = 0.05`)**: Enforces hard lot clamping and 25% free margin budget to permanently prevent broker `10019 (No Money)` errors on indices.
+- **NY Open Cash Bell Blackouts**: Pauses signal generation and retest fills during opening volatility whipsaws (09:28–09:33 NY for Gold, 09:30–09:34 NY for Nasdaq).
+- **Adaptive Post-Loss Cooldowns**: Decoupled to 60 minutes for Gold (allowing structural dust to settle) and 15 minutes for Nasdaq (ready for the next session momentum wave).
 
 ---
 
@@ -215,7 +220,7 @@ TRINETRA/
 │       ├── max_dd.py                   # 10.0% Trailing drawdown circuit breaker
 │       └── cluster.py                  # PyraCluster state manager
 │
-├── tests/                              # Comprehensive pytest suite (336+ passing unit & integration tests)
+├── tests/                              # Comprehensive pytest suite (386+ passing unit & integration tests, 100% green)
 ├── scripts/                            # Operational verification, backtest runners & telemetry tools
 └── scratch/                            # Verification scripts & research artifacts
 ```
