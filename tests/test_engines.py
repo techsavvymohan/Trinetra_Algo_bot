@@ -1,6 +1,6 @@
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from unittest.mock import MagicMock, patch
 import pytest
 
@@ -304,3 +304,73 @@ def test_multi_engine_coordinator_threaded_and_shutdown(base_components):
         coordinator.stop()
         t_coord.join(timeout=2.0)
         assert coordinator.running is False
+
+
+def test_nas_ny_open_blackout_and_symbol_cooldown(base_components):
+    """Verify Nasdaq opening-bell blackout (09:30-09:34 NY) and 15-min post-loss cooldown."""
+    c = base_components
+    nas_engine = Nas100Engine(
+        symbol="USTECH100M",
+        config=c["cfg"],
+        connector=c["connector"],
+        account=c["account"],
+        data_feed=c["data_feed"],
+        spread_tracker=c["spread_tracker"],
+        spread_filter=c["spread_filter"],
+        news_filter=c["news_filter"],
+        trigger=c["trigger"],
+        trade_mgr=c["trade_mgr"],
+        cluster_mgr=c["cluster_mgr"],
+        persistence=c["persistence"],
+    )
+
+    # 1. Test blackout veto during 09:31 NY (13:31 UTC)
+    ny_dt_blackout = datetime(2026, 10, 22, 9, 31)
+    now_utc_blackout = datetime(2026, 10, 22, 13, 31, tzinfo=timezone.utc)
+    nas_engine.evaluate_and_trigger(
+        now_utc=now_utc_blackout,
+        ny_dt=ny_dt_blackout,
+        data_all={},
+        m1_data=MagicMock(),
+        current_price=20000.0,
+        pending_clusters=[],
+        account_info=MagicMock(),
+    )
+    # trigger.detect_xau_scalp_sequence should NOT be called due to blackout
+    c["trigger"].detect_xau_scalp_sequence.assert_not_called()
+
+    # 2. Test cooldown length: 15 min for Nasdaq vs 60 min for Gold
+    now_test = datetime(2026, 10, 22, 15, 0, tzinfo=timezone.utc)
+    nas_engine.on_position_closed(-50.0, now_test, ExitReason.STOP_LOSS)
+    assert nas_engine.last_loss_time == now_test.replace(tzinfo=None)
+
+    gold_engine = XauusdEngine(
+        symbol="XAUUSD",
+        config=c["cfg"],
+        connector=c["connector"],
+        account=c["account"],
+        data_feed=c["data_feed"],
+        spread_tracker=c["spread_tracker"],
+        spread_filter=c["spread_filter"],
+        news_filter=c["news_filter"],
+        trigger=c["trigger"],
+        trade_mgr=c["trade_mgr"],
+        cluster_mgr=c["cluster_mgr"],
+        persistence=c["persistence"],
+    )
+    gold_engine.on_position_closed(-50.0, now_test, ExitReason.STOP_LOSS)
+
+    # At 16 minutes after loss:
+    t_16m = now_test + timedelta(minutes=16)
+    t_16m_naive = t_16m.replace(tzinfo=None)
+    nas_cd = getattr(c["cfg"].trading, "nas_post_loss_cooldown_minutes", 15)
+    gold_cd = getattr(c["cfg"].trading, "xau_post_loss_cooldown_minutes", 60)
+
+    elapsed_nas = (t_16m_naive - nas_engine.last_loss_time).total_seconds() / 60.0
+    elapsed_gold = (t_16m_naive - gold_engine.last_loss_time).total_seconds() / 60.0
+
+    # Nasdaq cooldown should be expired (16 >= 15)
+    assert elapsed_nas >= nas_cd
+    # Gold cooldown should still be active (16 < 60)
+    assert elapsed_gold < gold_cd
+

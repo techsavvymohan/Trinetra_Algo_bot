@@ -76,15 +76,16 @@ class CapitalAdapter:
 
         # 2. Collapsed 2-tranche micro position (0.02 lots)
         if abs(rounded_total - 0.02) < 1e-4:
+            t1_r = 1.50 if base_t1_r == 1.0 else (base_t1_r if base_t1_r > 0 else 1.50)
             return TranchePlan(
                 mode=TrancheMode.COLLAPSED_2_TRANCHE,
                 total_lots=0.02,
                 tranche1_lots=0.01,
-                tranche1_r=1.50,  # Bank half at 1.5R, move SL to BE
+                tranche1_r=t1_r,  # Bank half at dynamic T1 R (1.5R for 2-tranche collapse), move SL to BE
                 tranche2_lots=0.0,
                 runner_lots=0.01,
                 runner_trail_atr_mult=runner_atr_mult,
-                be_trigger_r=1.50,
+                be_trigger_r=t1_r,
                 be_buffer_pts=0.20,
             )
 

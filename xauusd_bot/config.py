@@ -33,7 +33,7 @@ class MT5Config:
     login: int = 0
     password: str = ""
     server: str = ""
-    path: str = r"C:\Program Files\MetaTrader 5\terminal64.exe"
+    path: str = ""  # Empty by default to strictly attach to running MT5 GUI
     timeout_ms: int = 20000
 
     @classmethod
@@ -45,7 +45,7 @@ class MT5Config:
             login=_env_int("MT5_LOGIN", 0),
             password=pwd,
             server=os.getenv("MT5_SERVER", ""),
-            path=os.getenv("MT5_PATH", cls.path),
+            path=os.getenv("MT5_PATH", ""),
             timeout_ms=_env_int("MT5_TIMEOUT_MS", 20000),
         )
 
@@ -90,6 +90,9 @@ class TradingConfig:
     partial_tp_tranche2_r: float = 2.2
     partial_tp_tranche2_pct: float = 35.0
 
+    # Dynamic Volatility Scaling (Continuous ATR Expansion Index vs Fixed R)
+    enable_dynamic_volatility_scaling: bool = True
+
     # Dynamic Conviction-Weighted Bet Sizing (Institutional Kelly Factor)
     enable_conviction_sizing: bool = True
     conviction_scale_a_plus: float = 2.60  # Proven Grade A+ Unicorn conviction multiplier for Gold
@@ -102,11 +105,11 @@ class TradingConfig:
     xau_a_plus_block_h1_bullish: bool = False  # Natural SMC trend-following (allow A+ in genuine bullish trend)
     xau_a_plus_min_sl_dist: float = 0.0        # Optional minimum SL distance for A+
 
-    # Tuesday Microstructure Guard (Compression Dampener for Gold)
-    tuesday_reduced_risk: bool = True
-    tuesday_risk_scale: float = 0.43
+    # Tuesday Microstructure (Standardized Uniform Risk)
+    tuesday_reduced_risk: bool = False
+    tuesday_risk_scale: float = 1.00
     tuesday_trade_enabled: bool = True
-    tuesday_breakeven_trigger_r: float = 1.40  # 1.40R trigger for Tuesday compression cushion
+    tuesday_breakeven_trigger_r: float = 0.70  # Standardized 0.70R breakeven trigger
 
     # Universal Capital Adapter & Whale Iceberg Slicing
     enable_universal_capital_adapter: bool = True
@@ -178,6 +181,7 @@ class TradingConfig:
     xau_fvg_expiry_bars: int = 8         # Option A: 8 M1 bars limit order patience for Gold
     nas_fvg_expiry_bars: int = 15        # 15 M1 bars limit order patience for Nasdaq 100 (antifragile retest window)
     xau_cooldown_minutes: int = 5
+    xau_post_loss_cooldown_minutes: int = 60  # Cooldown after loss/cut: 60 mins to let market settle & prevent revenge trades
     xau_swing_lookback_m15: int = 20
     xau_mss_lookback_m1: int = 5
     xau_liquidity_source: str = "m15_swings"  # "m15_swings" (authoritative winner)
@@ -186,14 +190,15 @@ class TradingConfig:
     xau_ecosystem_mode: bool = True
     xau_enable_london_asian_sweep: bool = True
     xau_enable_overlap_pullback: bool = False
-    xau_early_invalidation_exit: bool = False
+    xau_early_invalidation_exit: bool = True   # Structural Invalidation Guard for Gold (Opposite Displacement + MSS)
+    xau_invalidation_outside_window_only: bool = True  # Specifically guards out-of-window holding to protect profits & prevent adverse overnight shifts
     xau_enable_pre_fill_guard: bool = True
     xau_breakeven_ratchet_enabled: bool = True
     xau_breakeven_trigger_r: float = 0.70
     xau_breakeven_buffer_r: float = 0.10
-    xau_stagnation_exit_enabled: bool = True
-    xau_stagnation_bars: int = 40  # 40-bar (40-min) stagnation defense for Gold (aligned with Nasdaq nas_stagnation_bars=40)
-    xau_stagnation_min_r: float = 0.40
+    xau_stagnation_exit_enabled: bool = False
+    xau_stagnation_bars: int = 0
+    xau_stagnation_min_r: float = 0.0
     xau_partial_close_enabled: bool = True  # Enable 25% @ 1.0R + Breakeven ratchet ladder for Gold
     xau_london_displacement_atr_mult: float = 0.75
     xau_london_displacement_body_ratio: float = 0.65
@@ -223,12 +228,19 @@ class TradingConfig:
     nas_retest_max_bars: int = 15     # 15 M1 bars limit order patience for Nasdaq
     nas_require_h1_trend: bool = True
     xau_require_h1_trend: bool = True  # 24/5 All-Session H1 Trend Alignment Guard for Gold (London & NY)
-    enable_anti_trap_ifvg: bool = True # Anti-Trap Inversion FVG Engine (exploiting counter-trend retail traps)
+    enable_anti_trap_ifvg: bool = True  # Anti-Trap Inversion FVG Engine (exploiting counter-trend retail traps)
+    xau_block_chop_regime: bool = True # Hard-block setups during consolidation / compression (is_chop=True)
+    xau_require_m15_momentum_alignment: bool = True # Block signals opposing active M15 structure momentum (no counter-trend traps)
     nas_stagnation_bars: int = 40     # Centered on 35 - 45 bar plateau
     nas_max_consecutive_losses_day: int = 2  # Circuit breaker against FOMC/whipsaw days
     conviction_scale_nas_a_plus: float = 1.50
     xau_min_sl_distance: float = 5.0  # Minimum $5.00 SL breathing room floor for Gold
     nas_min_sl_distance: float = 10.0  # Minimum 10.0 pts SL breathing room floor for Nasdaq 100
+    nas_max_lot: float = 0.05          # Max lot cap for Nasdaq 100 (prevents 10019 No Money error on indices)
+    nas_enable_ny_open_blackout: bool = True   # Blackout window around 09:30 NY cash open (13:30-13:34 UTC) to avoid opening whipsaws
+    nas_ny_open_blackout_start_min: int = 30   # 09:30 NY / 13:30 UTC
+    nas_ny_open_blackout_end_min: int = 34     # 09:34 NY / 13:34 UTC
+    nas_post_loss_cooldown_minutes: int = 15   # 15 mins cooldown after loss for Nasdaq (fast-moving 3-hour session)
 
 
     # ── Institutional Session Boundaries ──────────────────────────────────────────────
@@ -237,7 +249,7 @@ class TradingConfig:
     xau_london_close_guard: bool = True
     xau_london_close_cutoff_hour: int = 16
     xau_london_close_cutoff_min: int = 30
-    xau_london_start_hour: int = 8
+    xau_london_start_hour: int = 7    # 07:00 UTC = 12:30 PM IST (London Cash Open)
     xau_london_start_minute: int = 0
     xau_friday_trade_enabled: bool = True   # Standardized Friday trading
     xau_friday_skip_london: bool = False    # Antifragile: dynamic economic news engine protects calendar events (no crude blanket day-ban)
@@ -283,9 +295,9 @@ class TradingConfig:
     nas_consec_loss_guard: bool = True
     nas_consec_loss_max: int = 2   # pause entire day after 2 consecutive NAS100 SL hits
 
-    # London Session Structural Optimization & Profit Protection
+    # London Session Structural Optimization & Execution
     xau_london_require_h1_trend: bool = True
-    xau_london_protect_profits: bool = True
+    xau_london_protect_profits: bool = False  # Antifragile: allow full institutional session without arbitrary single-trade freeze
 
     def is_in_nas_session(self, current_time) -> bool:
         """Evaluate whether current UTC time is within Nasdaq 100 active US cash open session.
@@ -355,10 +367,6 @@ class TradingConfig:
                 else:
                     scale = getattr(self, "conviction_scale_c", 0.60)
 
-        if is_tuesday and getattr(self, "tuesday_reduced_risk", False):
-            scale *= getattr(self, "tuesday_risk_scale", 1.00)
-        if is_friday and not spec.get("is_index", False) and getattr(self, "xau_friday_trade_enabled", True):
-            scale *= getattr(self, "xau_friday_risk_scale", 0.50)
         return scale
 
     def get_target_r(self, symbol: str = "XAUUSD") -> float:
@@ -397,22 +405,26 @@ class TradingConfig:
         return getattr(self, "backtest_commission_per_lot", 6.0)
 
 
-    xau_london_start_hour: int = 7
-    xau_london_start_minute: int = 45
-    xau_london_end_hour: int = 10
+    xau_london_start_hour: int = 7    # 07:00 UTC = 12:30 PM IST (London Cash Open)
+    xau_london_start_minute: int = 0
+    xau_london_end_hour: int = 12
     xau_london_end_minute: int = 0
 
     def is_in_xau_london_killzone(self, dt) -> bool:
-        """London killzone aligned to authentic London cash liquidity (07:45 - London cash peak UTC)."""
+        """London killzone aligned to authentic European/London morning liquidity (07:00 - 12:00 UTC / 12:30 PM - 5:30 PM IST)."""
         if dt is None:
-            return False
-        if getattr(self, "xau_friday_skip_london", True) and hasattr(dt, "weekday") and dt.weekday() == 4:
             return False
         h = dt.hour if hasattr(dt, "hour") else 0
         m = dt.minute if hasattr(dt, "minute") else 0
-        end_h = getattr(self, "xau_london_end_hour", 10)
+        start_h = getattr(self, "xau_london_start_hour", 7)
+        start_m = getattr(self, "xau_london_start_minute", 0)
+        end_h = getattr(self, "xau_london_end_hour", 12)
         end_m = getattr(self, "xau_london_end_minute", 0)
-        return (h == 7 and m >= 45) or (8 <= h < end_h) or (h == end_h and m <= end_m)
+        if h < start_h or (h == start_h and m < start_m):
+            return False
+        if h > end_h or (h == end_h and m > end_m):
+            return False
+        return True
 
     def get_min_sl_distance(self, symbol: str = "XAUUSD", current_price: float = 0.0, m1_atr: float = 0.0) -> float:
         from .utils.asset_specs import get_asset_spec
@@ -622,6 +634,7 @@ class TradingConfig:
             xau_risk_per_trade=_env_float("XAU_RISK_PER_TRADE", cls.xau_risk_per_trade),
             xau_max_trades_per_session=_env_int("XAU_MAX_TRADES_PER_SESSION", cls.xau_max_trades_per_session),
             xau_cooldown_minutes=_env_int("XAU_COOLDOWN_MINUTES", cls.xau_cooldown_minutes),
+            xau_post_loss_cooldown_minutes=_env_int("XAU_POST_LOSS_COOLDOWN_MINUTES", cls.xau_post_loss_cooldown_minutes),
             xau_swing_lookback_m15=_env_int("XAU_SWING_LOOKBACK_M15", cls.xau_swing_lookback_m15),
             xau_mss_lookback_m1=_env_int("XAU_MSS_LOOKBACK_M1", cls.xau_mss_lookback_m1),
             enable_vwap_bands=_env_bool("ENABLE_VWAP_BANDS", cls.enable_vwap_bands),
@@ -638,6 +651,7 @@ class TradingConfig:
             xau_enable_london_asian_sweep=_env_bool("XAU_ENABLE_LONDON_ASIAN_SWEEP", cls.xau_enable_london_asian_sweep),
             xau_enable_overlap_pullback=_env_bool("XAU_ENABLE_OVERLAP_PULLBACK", cls.xau_enable_overlap_pullback),
             xau_early_invalidation_exit=_env_bool("XAU_EARLY_INVALIDATION_EXIT", cls.xau_early_invalidation_exit),
+            xau_invalidation_outside_window_only=_env_bool("XAU_INVALIDATION_OUTSIDE_WINDOW_ONLY", cls.xau_invalidation_outside_window_only),
             xau_enable_pre_fill_guard=_env_bool("XAU_ENABLE_PRE_FILL_GUARD", cls.xau_enable_pre_fill_guard),
             xau_breakeven_ratchet_enabled=_env_bool("XAU_BREAKEVEN_RATCHET_ENABLED", cls.xau_breakeven_ratchet_enabled),
             xau_breakeven_trigger_r=_env_float("XAU_BREAKEVEN_TRIGGER_R", cls.xau_breakeven_trigger_r),
@@ -672,6 +686,10 @@ class TradingConfig:
             xau_session_cutoff_hour=_env_int("XAU_SESSION_CUTOFF_HOUR", cls.xau_session_cutoff_hour),
             xau_min_sl_distance=_env_float("XAU_MIN_SL_DISTANCE", cls.xau_min_sl_distance),
             nas_min_sl_distance=_env_float("NAS_MIN_SL_DISTANCE", cls.nas_min_sl_distance),
+            nas_enable_ny_open_blackout=_env_bool("NAS_ENABLE_NY_OPEN_BLACKOUT", cls.nas_enable_ny_open_blackout),
+            nas_ny_open_blackout_start_min=_env_int("NAS_NY_OPEN_BLACKOUT_START_MIN", cls.nas_ny_open_blackout_start_min),
+            nas_ny_open_blackout_end_min=_env_int("NAS_NY_OPEN_BLACKOUT_END_MIN", cls.nas_ny_open_blackout_end_min),
+            nas_post_loss_cooldown_minutes=_env_int("NAS_POST_LOSS_COOLDOWN_MINUTES", cls.nas_post_loss_cooldown_minutes),
             # El Professor Hidden Guards
             xau_london_close_guard=_env_bool("XAU_LONDON_CLOSE_GUARD", cls.xau_london_close_guard),
             xau_london_close_cutoff_hour=_env_int("XAU_LONDON_CLOSE_CUTOFF_HOUR", cls.xau_london_close_cutoff_hour),
@@ -725,6 +743,7 @@ class TradingConfig:
             partial_tp_tranche1_pct=_env_float("PARTIAL_TP_TRANCHE1_PCT", cls.partial_tp_tranche1_pct),
             partial_tp_tranche2_r=_env_float("PARTIAL_TP_TRANCHE2_R", cls.partial_tp_tranche2_r),
             partial_tp_tranche2_pct=_env_float("PARTIAL_TP_TRANCHE2_PCT", cls.partial_tp_tranche2_pct),
+            enable_dynamic_volatility_scaling=_env_bool("ENABLE_DYNAMIC_VOLATILITY_SCALING", cls.enable_dynamic_volatility_scaling),
             nas_killzone_morning_start_min=_env_int("NAS_KILLZONE_MORNING_START_MIN", cls.nas_killzone_morning_start_min),
             nas_london_close_pause_start_hour=_env_int("NAS_LONDON_CLOSE_PAUSE_START_HOUR", cls.nas_london_close_pause_start_hour),
             nas_london_close_pause_end_min=_env_int("NAS_LONDON_CLOSE_PAUSE_END_MIN", cls.nas_london_close_pause_end_min),
@@ -738,6 +757,10 @@ class TradingConfig:
             enable_l2_depth=_env_bool("ENABLE_L2_DEPTH", cls.enable_l2_depth),
             l2_depth_levels=_env_int("L2_DEPTH_LEVELS", cls.l2_depth_levels),
             l2_min_obi_threshold=_env_float("L2_MIN_OBI_THRESHOLD", cls.l2_min_obi_threshold),
+            enable_anti_trap_ifvg=_env_bool("ENABLE_ANTI_TRAP_IFVG", cls.enable_anti_trap_ifvg),
+            xau_block_chop_regime=_env_bool("XAU_BLOCK_CHOP_REGIME", cls.xau_block_chop_regime),
+            xau_require_m15_momentum_alignment=_env_bool("XAU_REQUIRE_M15_MOMENTUM_ALIGNMENT", cls.xau_require_m15_momentum_alignment),
+            nas_max_lot=_env_float("NAS_MAX_LOT", cls.nas_max_lot),
         )
 
 

@@ -83,23 +83,13 @@ class XauusdEngine(BaseSymbolEngine):
         h_utc = now_utc.hour
         m_utc = now_utc.minute
 
-        # Friday filter: Skip entire day if Friday trading disabled for Gold
-        if not getattr(tc, "xau_friday_trade_enabled", False) and now_utc.weekday() == 4:
-            return False
-
         if getattr(tc, "xau_strict_killzones", True):
-            lon_start_h = getattr(tc, "xau_london_start_hour", 8)
-            lon_start_m = getattr(tc, "xau_london_start_minute", 0)
-            lon_end_h = getattr(tc, "xau_london_end_hour", 12)
-            lon_end_m = getattr(tc, "xau_london_end_minute", 0)
-            in_london = (h_utc > lon_start_h or (h_utc == lon_start_h and m_utc >= lon_start_m)) and (h_utc < lon_end_h or (h_utc == lon_end_h and m_utc <= lon_end_m))
+            in_london = tc.is_in_xau_london_killzone(now_utc)
 
             ny_end_h = getattr(tc, "xau_london_close_cutoff_hour", 16)
             ny_end_m = getattr(tc, "xau_london_close_cutoff_min", 30)
             in_ny_core = (13 < h_utc < ny_end_h) or (h_utc == 13 and m_utc >= 30) or (h_utc == ny_end_h and m_utc <= ny_end_m)
 
-            if getattr(tc, "friday_skip_ny_session", True) and now_utc.weekday() == 4:
-                in_ny_core = False
             cutoff_h = getattr(tc, "xau_session_cutoff_hour", 24)
             if cutoff_h < 24 and h_utc >= cutoff_h:
                 in_ny_core = False
@@ -112,32 +102,18 @@ class XauusdEngine(BaseSymbolEngine):
         h_utc = now_utc.hour
         m_utc = now_utc.minute
 
-        # Friday trading check
-        if not getattr(tc, "xau_friday_trade_enabled", False) and now_utc.weekday() == 4:
-            return False
-
-        # Tuesday trading check
-        if now_utc.weekday() == 1 and not getattr(tc, "tuesday_trade_enabled", True):
-            return False
-
         # Reset daily tracking
         today_date = now_utc.date()
         if self.last_g5_day is not None and self.last_g5_day != today_date:
             self.consec_losses = 0
             self.paused_today = False
-            self.london_paused_today = False
-            self.london_won_today = False
             self.london_trades_today = 0
             self.ny_trades_today = 0
+            self.london_paused_today = False
         self.last_g5_day = today_date
 
         # Max trades per session
-        lon_start_h = getattr(tc, "xau_london_start_hour", 8)
-        lon_start_m = getattr(tc, "xau_london_start_minute", 0)
-        lon_end_h = getattr(tc, "xau_london_end_hour", 12)
-        lon_end_m = getattr(tc, "xau_london_end_minute", 0)
-        in_london = (h_utc > lon_start_h or (h_utc == lon_start_h and m_utc >= lon_start_m)) and (h_utc < lon_end_h or (h_utc == lon_end_h and m_utc <= lon_end_m))
-
+        in_london = tc.is_in_xau_london_killzone(now_utc)
         ny_end_h = getattr(tc, "xau_london_close_cutoff_hour", 16)
         ny_end_m = getattr(tc, "xau_london_close_cutoff_min", 30)
         in_ny_core = (13 < h_utc < ny_end_h) or (h_utc == 13 and m_utc >= 30) or (h_utc == ny_end_h and m_utc <= ny_end_m)
@@ -153,17 +129,6 @@ class XauusdEngine(BaseSymbolEngine):
         if cutoff_h < 24 and h_utc >= cutoff_h:
             log.debug("[%s] XAU Session Cutoff: veto at %02d:%02d UTC (cutoff: %d:00 UTC)", self.symbol, h_utc, m_utc, cutoff_h)
             return False
-
-        # NY Open Blackout Buffer (09:28 - 09:33 NY Opening Drive Spike Protection)
-        if getattr(tc, "xau_enable_ny_open_blackout", True):
-            from ..utils.time_utils import to_ny_time
-            ny_dt = to_ny_time(now_utc, getattr(tc, "xau_session_timezone", "America/New_York"))
-            b_start = getattr(tc, "xau_ny_open_blackout_start_min", 28)
-            b_end = getattr(tc, "xau_ny_open_blackout_end_min", 33)
-            if ny_dt.hour == 9 and (b_start <= ny_dt.minute <= b_end):
-                log.debug("[%s] 🛡️ NY Open Blackout: 09:30 cash bell volatility buffer active (%02d:%02d NY) — signals vetoed",
-                          self.symbol, ny_dt.hour, ny_dt.minute)
-                return False
 
         # Guard 1: NY Cutoff / London Close Wall — no new entries after cutoff
         if getattr(tc, "xau_london_close_guard", True):
@@ -192,37 +157,25 @@ class XauusdEngine(BaseSymbolEngine):
                 log.info("[%s] G5 XAU Consec-Loss Guard: paused for rest of day (%d consecutive SLs)",
                          self.symbol, self.consec_losses)
                 return False
-            if self.london_paused_today and in_london:
-                log.info("[%s] G5b London SL Pause: blocked London entry (lost a London trade today)", self.symbol)
-                return False
-            if getattr(tc, "xau_london_protect_profits", True) and self.london_won_today and in_london:
-                log.info("[%s] London Profit Protect: won London trade today, locked in profit", self.symbol)
-                return False
 
         return True
 
     def on_position_closed(self, cluster_pnl: float, now_utc: datetime, exit_reason: ExitReason):
+        super().on_position_closed(cluster_pnl, now_utc, exit_reason)
         tc = self.cfg.trading
         self.last_g5_day = now_utc.date()
-        h_utc = now_utc.hour
-        m_utc = now_utc.minute
-        in_london = (h_utc == 7 and m_utc >= 45) or (8 <= h_utc < 10) or (h_utc == 10 and m_utc <= 30)
+
+        in_lon = tc.is_in_xau_london_killzone(now_utc)
+        if in_lon and cluster_pnl < 0:
+            self.london_paused_today = True
 
         if getattr(tc, "xau_consec_loss_guard", True):
             max_consec = getattr(tc, "xau_consec_loss_max", 2)
             if cluster_pnl > 0:
                 self.consec_losses = 0
                 log.info("[%s] G5: Win recorded — streak reset to 0", self.symbol)
-                if in_london:
-                    self.london_won_today = True
-                    log.info("[%s] 🏆 London Win recorded at %02d:%02d UTC — London profits protected for today",
-                             self.symbol, h_utc, m_utc)
             else:
                 self.consec_losses += 1
-                if in_london:
-                    self.london_paused_today = True
-                    log.warning("[%s] 🛡️ G5b London SL Pause activated at %02d:%02d UTC — London entries blocked for today",
-                                self.symbol, h_utc, m_utc)
                 log.info("[%s] G5: SL hit — streak=%d (limit=%d)", self.symbol, self.consec_losses, max_consec)
                 if self.consec_losses >= max_consec:
                     self.paused_today = True
@@ -283,7 +236,7 @@ class XauusdEngine(BaseSymbolEngine):
         m_utc = now_utc.minute
         lon_end_h = getattr(tc, "xau_london_end_hour", 12)
         lon_end_m = getattr(tc, "xau_london_end_minute", 0)
-        in_london = (h_utc == 7 and m_utc >= 45) or (8 <= h_utc < lon_end_h) or (h_utc == lon_end_h and m_utc <= lon_end_m)
+        in_london = tc.is_in_xau_london_killzone(now_utc)
 
         ny_end_h = getattr(tc, "xau_london_close_cutoff_hour", 16)
         ny_end_m = getattr(tc, "xau_london_close_cutoff_min", 30)
@@ -298,22 +251,49 @@ class XauusdEngine(BaseSymbolEngine):
             disp_atr = max(base_lon_atr, vr.min_atr_mult)
             disp_body = max(base_lon_body, vr.min_body_ratio)
 
-        target_r = getattr(tc, "xau_target_r", vr.target_r)
+        use_dyn_scaling = getattr(tc, "enable_dynamic_volatility_scaling", True)
+        target_r = vr.target_r if use_dyn_scaling else getattr(tc, "xau_target_r", vr.target_r)
         pv = self.account.point_size(self.symbol) if hasattr(self.account, "point_size") else 0.01
 
-        # Macro H1 Trend Alignment Guard (24/5 All Sessions + London Specific)
+        # Macro Multi-Timeframe Trend Alignment Guard (H1 + M15 Confluence)
         macro_trend_bias = None
         req_h1_all = getattr(tc, "xau_require_h1_trend", True)
         req_h1_lon = getattr(tc, "xau_london_require_h1_trend", True)
-        early_london = in_london and ((h_utc == 7 and m_utc >= 45) or (h_utc == 8 and m_utc <= 30))
+        early_london = in_london and (h_utc == 7 or (h_utc == 8 and m_utc <= 30))
         if req_h1_all or early_london or (in_london and req_h1_lon):
+            h1_bias = None
+            m15_bias = None
+
             h1_data = data_all.get("H1")
             if h1_data and len(h1_data.close) >= 21:
                 from ..indicators.moving_averages import ema
-                ema9 = ema(h1_data.close, 9)
-                ema21 = ema(h1_data.close, 21)
-                if ema9 is not None and ema21 is not None:
-                    macro_trend_bias = TradeDirection.BUY if ema9 > ema21 else TradeDirection.SELL
+                h1_ema9 = ema(h1_data.close, 9)
+                h1_ema21 = ema(h1_data.close, 21)
+                if h1_ema9 is not None and h1_ema21 is not None:
+                    h1_bias = TradeDirection.BUY if h1_ema9 > h1_ema21 else TradeDirection.SELL
+
+            if len(m15_closed.close) >= 21:
+                from ..indicators.moving_averages import ema
+                m15_ema9 = ema(m15_closed.close, 9)
+                m15_ema21 = ema(m15_closed.close, 21)
+                if m15_ema9 is not None and m15_ema21 is not None:
+                    m15_bias = TradeDirection.BUY if m15_ema9 > m15_ema21 else TradeDirection.SELL
+
+            if h1_bias is not None and m15_bias is not None:
+                if h1_bias == m15_bias:
+                    # Confluence: Both H1 and M15 confirm the macro trend
+                    macro_trend_bias = h1_bias
+                else:
+                    # HTF Divergence / Intraday Session Reversal:
+                    # H1 lags while M15 reverses structure. Setting to None prevents
+                    # one-way blindfolding (bsl=None) and allows clean sweeps in the real direction!
+                    macro_trend_bias = None
+                    log.debug("[%s] ⚖️ HTF Divergence: H1=%s vs M15=%s -> NEUTRAL (Unblocking session sweep)",
+                             self.symbol, h1_bias.value, m15_bias.value)
+            elif h1_bias is not None:
+                macro_trend_bias = h1_bias
+            elif m15_bias is not None:
+                macro_trend_bias = m15_bias
 
         seq = self.trigger.detect_xau_scalp_sequence(
             m15_data=m15_closed,
@@ -337,6 +317,24 @@ class XauusdEngine(BaseSymbolEngine):
         )
         if not seq:
             return
+
+        # Pure Sniper Guard: Hard-block all setups during choppy / compression regimes
+        if seq.get("is_chop", False) and getattr(tc, "xau_block_chop_regime", True):
+            log.info("[%s] 🛡️ Pure Sniper Guard: Market in Chop / Compression Regime (is_chop=True) — Setup Blocked", self.symbol)
+            return
+
+        # Guard against entering counter to immediate M15 structure momentum (no falling knife entries)
+        if getattr(tc, "xau_require_m15_momentum_alignment", True):
+            if len(m15_closed.close) >= 21:
+                from ..indicators.moving_averages import ema
+                m15_e9 = ema(m15_closed.close, 9)
+                m15_e21 = ema(m15_closed.close, 21)
+                if m15_e9 is not None and m15_e21 is not None:
+                    curr_m15_bias = TradeDirection.BUY if m15_e9 > m15_e21 else TradeDirection.SELL
+                    if seq["direction"] != curr_m15_bias:
+                        log.info("[%s] 🛡️ M15 Structure Filter: %s signal opposes M15 trend (%s) — Vetoed",
+                                 self.symbol, seq["direction"].value, curr_m15_bias.value)
+                        return
 
         # Prevent duplicate pending in same direction
         if getattr(tc, "xau_prevent_duplicate_pending", True):
@@ -380,10 +378,9 @@ class XauusdEngine(BaseSymbolEngine):
                 h1_bias_val = "bullish" if ema9 > ema21 else "bearish"
 
         in_ny_core_window = in_ny_core if getattr(tc, "xau_a_plus_ny_core_only", False) else True
-        not_bullish_trap = (h1_bias_val != "bullish") if getattr(tc, "xau_a_plus_block_h1_bullish", False) else True
         sl_dist_ok = (abs(seq["entry_price"] - seq["sl_price"]) >= getattr(tc, "xau_a_plus_min_sl_dist", 0.0))
 
-        if in_ny_core_window and not_bullish_trap and sl_dist_ok:
+        if in_ny_core_window and sl_dist_ok:
             sig.grade = SignalGrade.A_PLUS
             sig.setup_type = f"SWEEP_FVG_A_PLUS_{sess_name}"
             log.info("[%s] 🦄 UNICORN SETUP: Grade A+ Conviction Active (Scale=%.2fx)", self.symbol, getattr(tc, "conviction_scale_a_plus", 1.50))
@@ -394,6 +391,9 @@ class XauusdEngine(BaseSymbolEngine):
 
         sig.fvg_low = seq.get("fvg_low", 0.0)
         sig.fvg_high = seq.get("fvg_high", 0.0)
+        sig.dynamic_t1_r = vr.tranche1_r
+        sig.dynamic_t2_r = vr.tranche2_r
+        sig.runner_trail_mult = vr.runner_trail_mult
 
         # Risk scaling
         risk_scale = 1.0
@@ -406,10 +406,6 @@ class XauusdEngine(BaseSymbolEngine):
         if getattr(tc, "enable_conviction_sizing", True) and hasattr(tc, "get_conviction_scale"):
             conv_scale = tc.get_conviction_scale(sig)
             risk_scale *= conv_scale
-
-        if now_utc.weekday() == 1 and getattr(tc, "tuesday_reduced_risk", False):
-            tue_scale = getattr(tc, "tuesday_risk_scale", 1.00)
-            risk_scale *= tue_scale
 
         point_val = self.account.point_value(self.symbol) if hasattr(self.account, "point_value") else 1.0
         contract_sz = self.account.contract_size(self.symbol) if hasattr(self.account, "contract_size") else 100.0

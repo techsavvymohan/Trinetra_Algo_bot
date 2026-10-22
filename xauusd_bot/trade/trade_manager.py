@@ -14,6 +14,8 @@ from ..risk.max_dd import MaxDDTracker
 from ..risk.position_sizer import PositionSizer
 from ..risk.capital_adapter import CapitalAdapter, TrancheMode
 from ..utils.asset_specs import get_asset_spec
+from ..indicators.atr import atr
+from datetime import datetime, timezone
 
 log = logging.getLogger("xauusd_bot.trade.manager")
 
@@ -101,11 +103,16 @@ class TradeManager:
         cluster.fvg_high = getattr(signal, "fvg_high", 0.0)
         cluster.is_chop = getattr(signal, "is_chop", False)
         cluster.dynamic_t1_pct = getattr(signal, "dynamic_t1_pct", 25.0)
-        cluster.dynamic_t1_r = getattr(signal, "dynamic_t1_r", 1.50)
+        cluster.dynamic_t1_r = getattr(signal, "dynamic_t1_r", 0.75)
+        cluster.dynamic_t2_r = getattr(signal, "dynamic_t2_r", 2.00)
+        cluster.runner_trail_mult = getattr(signal, "runner_trail_mult", 3.0)
         cluster.highest_price = leg.entry_price
         cluster.lowest_price = leg.entry_price
         cluster.legs.append(leg)
         cluster.collective_sl = signal.sl_price
+        sl_diff = abs(leg.entry_price - signal.sl_price) if signal.sl_price > 0 else 0.0
+        if sl_diff >= 1.0:
+            cluster.initial_r_dist = sl_diff
         cluster.open_time = leg.open_time
         cluster.status = TradeStatus.OPEN
         self.daily_loss.register_trade()
@@ -179,10 +186,15 @@ class TradeManager:
         cluster.is_chop = getattr(signal, "is_chop", False)
         cluster.dynamic_t1_pct = getattr(signal, "dynamic_t1_pct", 25.0)
         cluster.dynamic_t1_r = getattr(signal, "dynamic_t1_r", 1.50)
+        cluster.dynamic_t2_r = getattr(signal, "dynamic_t2_r", 2.00)
+        cluster.runner_trail_mult = getattr(signal, "runner_trail_mult", 3.0)
         cluster.highest_price = limit_price
         cluster.lowest_price = limit_price
         cluster.legs.append(leg)
         cluster.collective_sl = signal.sl_price
+        sl_diff = abs(limit_price - signal.sl_price) if signal.sl_price > 0 else 0.0
+        if sl_diff >= 1.0:
+            cluster.initial_r_dist = sl_diff
         cluster.open_time = leg.open_time
         cluster.status = TradeStatus.PENDING
         return cluster
@@ -200,7 +212,6 @@ class TradeManager:
         risk_scale: float = 1.0,
     ) -> Optional[PyraCluster]:
         """Register an in-memory pending FVG setup awaiting confirmed retest (Zero broker orders placed yet)."""
-        from datetime import datetime, timezone
         if not signal.is_tradeable():
             log.info("Signal %s not tradeable", signal.id[:8])
             return None
@@ -236,14 +247,20 @@ class TradeManager:
 
         cluster = self.pyramid_mgr.create_cluster(signal.id, signal.direction, signal.entry_tf or "M1")
         cluster.symbol = getattr(signal, "symbol", "XAUUSD")
+        cluster.max_lot = max_lot
         cluster.fvg_low = getattr(signal, "fvg_low", 0.0)
         cluster.fvg_high = getattr(signal, "fvg_high", 0.0)
         cluster.is_chop = getattr(signal, "is_chop", False)
         cluster.dynamic_t1_pct = getattr(signal, "dynamic_t1_pct", 25.0)
-        cluster.dynamic_t1_r = getattr(signal, "dynamic_t1_r", 1.50)
+        cluster.dynamic_t1_r = getattr(signal, "dynamic_t1_r", 0.75)
+        cluster.dynamic_t2_r = getattr(signal, "dynamic_t2_r", 2.00)
+        cluster.runner_trail_mult = getattr(signal, "runner_trail_mult", 3.0)
         cluster.highest_price = limit_price
         cluster.lowest_price = limit_price
         cluster.collective_sl = signal.sl_price
+        sl_diff = abs(limit_price - signal.sl_price) if signal.sl_price > 0 else 0.0
+        if sl_diff >= 1.0:
+            cluster.initial_r_dist = sl_diff
         cluster.target_tp = signal.tp_price
         cluster.limit_price = limit_price
         cluster.retest_touched = False
@@ -294,6 +311,14 @@ class TradeManager:
             if sl_dist > 0:
                 remaining_budget = self.daily_loss.remaining_budget_amount()
                 risk_scale = getattr(cluster, "risk_scale", getattr(signal, "risk_scale", 1.0))
+                from ..utils.asset_specs import is_index_symbol
+                is_index = is_index_symbol(cluster.symbol, curr_p)
+                nas_max = getattr(tc, "nas_max_lot", 0.05) if tc else 0.05
+                safe_max_lot = getattr(cluster, "max_lot", None)
+                if not isinstance(safe_max_lot, (int, float)) or safe_max_lot <= 0:
+                    safe_max_lot = nas_max if is_index else 100.0
+                if is_index:
+                    safe_max_lot = min(safe_max_lot, nas_max)
                 new_lot = self.sizer.calculate_lot_size(
                     account=account,
                     entry_price=curr_p,
@@ -302,7 +327,7 @@ class TradeManager:
                     point_value=point_value,
                     contract_size=contract_size,
                     min_lot=min_lot,
-                    max_lot=getattr(account, "max_lot", 100.0),
+                    max_lot=safe_max_lot,
                     lot_step=lot_step,
                     remaining_budget=remaining_budget,
                     max_risk_amount=remaining_budget,
@@ -331,6 +356,9 @@ class TradeManager:
         cluster.open_time = leg.open_time
         cluster.highest_price = leg.entry_price
         cluster.lowest_price = leg.entry_price
+        sl_diff = abs(leg.entry_price - leg.sl_price) if leg.sl_price > 0 else 0.0
+        if sl_diff >= 1.0:
+            cluster.initial_r_dist = sl_diff
         from ..utils.asset_specs import get_asset_spec
         digits = get_asset_spec(cluster.symbol, leg.entry_price).get("digits", 2)
         fmt = f".{digits}f"
@@ -406,6 +434,7 @@ class TradeManager:
         self,
         cluster: PyraCluster,
         data_all: Dict[str, TimeframeData],
+        session_active: Optional[bool] = None,
     ) -> List[dict]:
         actions = []
         if cluster.status != TradeStatus.OPEN:
@@ -454,12 +483,6 @@ class TradeManager:
                 raw_buf = getattr(cfg_obj, "xau_breakeven_buffer_r", 0.10)
             be_buf = float(raw_buf) if isinstance(raw_buf, (int, float)) else 0.10
 
-            from datetime import datetime, timezone
-            now_utc = datetime.now(timezone.utc)
-            if now_utc.weekday() == 1 and getattr(cfg_obj, "tuesday_reduced_risk", False):
-                raw_tue = getattr(cfg_obj, "tuesday_breakeven_trigger_r", be_trig)
-                tue_be = float(raw_tue) if isinstance(raw_tue, (int, float)) else be_trig
-                be_trig = max(be_trig, tue_be)
 
             new_be = self.exit_mgr.check_breakeven_ratchet(cluster, current_price, trigger_r=be_trig, buffer_r=be_buf)
             if new_be is not None:
@@ -478,7 +501,6 @@ class TradeManager:
         # exit flat to recycle risk budget and prevent chop decay.
         stag_enabled = getattr(cfg_obj, "xau_stagnation_exit_enabled", False)
         if isinstance(stag_enabled, bool) and stag_enabled and cluster.open_time:
-            from datetime import datetime, timezone
             now_utc_naive = datetime.now(timezone.utc).replace(tzinfo=None)
             bars_held = int((now_utc_naive - cluster.open_time).total_seconds() / 60.0)
             raw_max = getattr(cfg_obj, "xau_stagnation_bars", 40)
@@ -491,6 +513,28 @@ class TradeManager:
                 self._close_cluster_positions(cluster, current_price, ExitReason.STAGNATION)
                 actions.append({"action": "stagnation_exit", "cluster": cluster.cluster_id, "price": current_price})
                 return actions
+
+        # 2c. Structural Damage / Opposite MSS Early Invalidation
+        # Specifically for Gold when holding outside active session window, if market structure breaks
+        # (Opposite displacement + MSS or adverse institutional delta spike), exit early to protect profits/capital.
+        sym = getattr(cluster, "symbol", "XAUUSD")
+        is_gold = "XAU" in sym.upper() or "GOLD" in sym.upper()
+        inv_enabled = getattr(cfg_obj, "xau_early_invalidation_exit", False)
+        outside_only = getattr(cfg_obj, "xau_invalidation_outside_window_only", True)
+        should_check_inv = inv_enabled and is_gold and ((not session_active) if (outside_only and session_active is not None) else True)
+
+        if should_check_inv and hasattr(self.exit_mgr, "check_structural_invalidation") and cluster.status == TradeStatus.OPEN:
+            now_utc_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+            trade_age_s = (now_utc_naive - cluster.open_time).total_seconds() if cluster.open_time else 999.0
+            if trade_age_s >= 180.0:  # Minimum 3 M1 bars breathing room
+                m1_atr = atr(m1_data.high, m1_data.low, m1_data.close, 14) or 1.0
+                inv_ok, inv_reason = self.exit_mgr.check_structural_invalidation(cluster, m1_data, m1_atr)
+                if inv_ok:
+                    log.warning("[%s] ⚡ Structural Invalidation Exit: %s for cluster %s at %.2f (Session Active: %s)",
+                                sym, inv_reason, cluster.cluster_id[:8], current_price, session_active)
+                    self._close_cluster_positions(cluster, current_price, ExitReason.STRUCTURAL_INVALIDATION)
+                    actions.append({"action": "structural_invalidation", "cluster": cluster.cluster_id, "price": current_price, "reason": inv_reason})
+                    return actions
 
         # 3. Partial TP check
         pc_enabled = getattr(cfg_obj, "xau_partial_close_enabled", True)
@@ -516,7 +560,8 @@ class TradeManager:
                     leg_lot = getattr(leg, "lot_size", None)
                     if isinstance(leg_lot, (int, float)):
                         if plan and plan.mode == TrancheMode.SINGLE_TRANCHE_BE:
-                            close_lot = 0.0  # 0.01 cannot be split; activate breakeven ratchet only
+                            close_lot = 0.0  # 0.01 cannot be split; activate breakeven ratchet and mark as runner
+                            leg._is_runner = True
                         elif plan and plan.mode in (TrancheMode.COLLAPSED_2_TRANCHE, TrancheMode.BALANCED_3_TRANCHE):
                             close_lot = plan.tranche1_lots
                         else:
@@ -602,7 +647,6 @@ class TradeManager:
         # Decouple PSAR reversal exit from FVG scalps so they are never closed prematurely on tick #1.
         # For non-FVG (momentum) trades, require at least 180s holding time and config enablement.
         enable_psar = getattr(cfg_obj, "enable_psar_trailing", True)
-        from datetime import datetime, timezone
         now_utc = datetime.now(timezone.utc)
         if cluster.open_time:
             c_time = cluster.open_time if cluster.open_time.tzinfo else cluster.open_time.replace(tzinfo=timezone.utc)
@@ -625,7 +669,8 @@ class TradeManager:
         if is_fvg_trade:
             runner_legs = [l for l in cluster.legs if l.status == TradeStatus.OPEN and getattr(l, "_is_runner", False)]
             if runner_legs:
-                trail_stop = self.exit_mgr.check_chandelier_exit(m1_data, cluster)
+                dynamic_mult = getattr(cluster, "runner_trail_mult", None)
+                trail_stop = self.exit_mgr.check_chandelier_exit(m1_data, cluster, trail_mult=dynamic_mult)
                 if trail_stop is not None:
                     for r_leg in runner_legs:
                         sym = getattr(r_leg, "symbol", "") or getattr(cluster, "symbol", "")
@@ -669,7 +714,6 @@ class TradeManager:
         return actions
 
     def _close_cluster_positions(self, cluster: PyraCluster, price: float, reason: ExitReason):
-        from datetime import datetime, timezone
         now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
         all_closed = True
         for leg in cluster.legs:

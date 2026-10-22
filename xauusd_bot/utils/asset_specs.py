@@ -3,12 +3,17 @@
 from typing import Dict, Any
 
 
-def get_asset_spec(symbol: str = "XAUUSD", price: float = 0.0) -> Dict[str, Any]:
-    """Return asset specifications for XAUUSD (Gold) or USTECH100M / NAS100 (Nasdaq)."""
+def is_index_symbol(symbol: str = "", price: float = 0.0) -> bool:
+    """Check if symbol is an index (Nasdaq / US100 / NDX / etc)."""
     s = (symbol or "").upper()
-    is_index = any(idx in s for idx in ["NAS", "USTEC", "TECH", "US100", "NDX", "NQ"]) or (
+    return any(idx in s for idx in ["NAS", "USTEC", "TECH", "US100", "NDX", "NQ"]) or (
         price > 5000.0 and "XAU" not in s and "GOLD" not in s
     )
+
+
+def get_asset_spec(symbol: str = "XAUUSD", price: float = 0.0) -> Dict[str, Any]:
+    """Return asset specifications for XAUUSD (Gold) or USTECH100M / NAS100 (Nasdaq)."""
+    is_index = is_index_symbol(symbol, price)
 
     if is_index:
         return {

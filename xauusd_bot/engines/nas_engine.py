@@ -99,6 +99,7 @@ class Nas100Engine(BaseSymbolEngine):
         return True
 
     def on_position_closed(self, cluster_pnl: float, now_utc: datetime, exit_reason: ExitReason):
+        super().on_position_closed(cluster_pnl, now_utc, exit_reason)
         tc = self.cfg.trading
         self.last_g5_day = now_utc.date()
         if getattr(tc, "nas_consec_loss_guard", True):
@@ -133,6 +134,14 @@ class Nas100Engine(BaseSymbolEngine):
         account_info: AccountInfo,
     ):
         tc = self.cfg.trading
+        if getattr(tc, "nas_enable_ny_open_blackout", True):
+            b_start = getattr(tc, "nas_ny_open_blackout_start_min", 30)
+            b_end = getattr(tc, "nas_ny_open_blackout_end_min", 34)
+            if ny_dt.hour == 9 and (b_start <= ny_dt.minute <= b_end):
+                log.debug("[%s] 🛡️ NAS NY Open Blackout: 09:30 cash bell buffer active (%02d:%02d NY) — signals vetoed",
+                          self.symbol, ny_dt.hour, ny_dt.minute)
+                return
+
         m15_data = data_all.get("M15")
         if not m15_data or len(m15_data.close) < 15 or len(m1_data.close) < 15:
             return
@@ -157,12 +166,32 @@ class Nas100Engine(BaseSymbolEngine):
 
         h1_data = data_all.get("H1")
         trend_bias = None
-        if getattr(tc, "nas_require_h1_trend", True) and h1_data and len(h1_data.close) >= 20:
-            from ..indicators.moving_averages import ema
-            fast_ema = ema(h1_data.close, 9)
-            slow_ema = ema(h1_data.close, 50)
-            if fast_ema is not None and slow_ema is not None:
-                trend_bias = TradeDirection.BUY if fast_ema > slow_ema else TradeDirection.SELL
+        if getattr(tc, "nas_require_h1_trend", True):
+            h1_bias = None
+            m15_bias = None
+            if h1_data and len(h1_data.close) >= 20:
+                from ..indicators.moving_averages import ema
+                fast_ema = ema(h1_data.close, 9)
+                slow_ema = ema(h1_data.close, 50)
+                if fast_ema is not None and slow_ema is not None:
+                    h1_bias = TradeDirection.BUY if fast_ema > slow_ema else TradeDirection.SELL
+
+            if len(m15_closed.close) >= 21:
+                from ..indicators.moving_averages import ema
+                m15_e9 = ema(m15_closed.close, 9)
+                m15_e21 = ema(m15_closed.close, 21)
+                if m15_e9 is not None and m15_e21 is not None:
+                    m15_bias = TradeDirection.BUY if m15_e9 > m15_e21 else TradeDirection.SELL
+
+            if h1_bias is not None and m15_bias is not None:
+                trend_bias = h1_bias if h1_bias == m15_bias else None
+                if trend_bias is None:
+                    log.debug("[%s] ⚖️ HTF Divergence: H1=%s vs M15=%s -> NEUTRAL",
+                             self.symbol, h1_bias.value, m15_bias.value)
+            elif h1_bias is not None:
+                trend_bias = h1_bias
+            elif m15_bias is not None:
+                trend_bias = m15_bias
 
         seq = self.trigger.detect_xau_scalp_sequence(
             m15_data=m15_closed,
@@ -185,6 +214,24 @@ class Nas100Engine(BaseSymbolEngine):
         )
         if not seq:
             return
+
+        # Pure Sniper Guard: Hard-block all setups during choppy / compression regimes
+        if seq.get("is_chop", False) and getattr(tc, "xau_block_chop_regime", True):
+            log.info("[%s] 🛡️ Pure Sniper Guard: Market in Chop / Compression Regime (is_chop=True) — Setup Blocked", self.symbol)
+            return
+
+        # Guard against entering counter to immediate M15 structure momentum
+        if getattr(tc, "xau_require_m15_momentum_alignment", True):
+            if len(m15_closed.close) >= 21:
+                from ..indicators.moving_averages import ema
+                m15_e9 = ema(m15_closed.close, 9)
+                m15_e21 = ema(m15_closed.close, 21)
+                if m15_e9 is not None and m15_e21 is not None:
+                    curr_m15_bias = TradeDirection.BUY if m15_e9 > m15_e21 else TradeDirection.SELL
+                    if seq["direction"] != curr_m15_bias:
+                        log.info("[%s] 🛡️ M15 Structure Filter: %s signal opposes M15 trend (%s) — Vetoed",
+                                 self.symbol, seq["direction"].value, curr_m15_bias.value)
+                        return
 
         # Prevent duplicate pending orders in same direction
         if getattr(tc, "xau_prevent_duplicate_pending", True):
@@ -218,6 +265,9 @@ class Nas100Engine(BaseSymbolEngine):
         sig.setup_type = "SWEEP_FVG_US_CASH"
         sig.fvg_low = seq.get("fvg_low", 0.0)
         sig.fvg_high = seq.get("fvg_high", 0.0)
+        sig.dynamic_t1_r = getattr(tc, "nas_breakeven_trigger_r", 1.50)
+        sig.dynamic_t2_r = getattr(tc, "nas_target_r", 2.00)
+        sig.runner_trail_mult = getattr(tc, "runner_trail_atr_mult", 3.0)
 
         # Net Dollar Beta Gate (Correlation Shield)
         risk_scale = 1.0
@@ -236,7 +286,8 @@ class Nas100Engine(BaseSymbolEngine):
         contract_sz = self.account.contract_size(self.symbol) if hasattr(self.account, "contract_size") else 1.0
         min_lot = self.account.min_lot(self.symbol) if hasattr(self.account, "min_lot") else 0.01
         lot_step = self.account.lot_step(self.symbol) if hasattr(self.account, "lot_step") else 0.01
-        max_lot = self.account.max_lot(self.symbol) if hasattr(self.account, "max_lot") else 100.0
+        broker_max = self.account.max_lot(self.symbol) if hasattr(self.account, "max_lot") else 100.0
+        max_lot = min(broker_max, getattr(tc, "nas_max_lot", 0.05))
 
         use_moc = getattr(tc, "nas_require_retest", True)
         if use_moc:

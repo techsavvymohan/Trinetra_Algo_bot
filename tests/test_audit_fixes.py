@@ -473,3 +473,87 @@ def test_xau_engine_tiered_conviction_float_scalars():
     assert sig is not None
     assert sig.grade == SignalGrade.A_PLUS
 
+
+def test_nas_margin_guard_clamped_lot():
+    """Verify that Nasdaq market entries with excessive lots (e.g. 1.43) are clamped to nas_max_lot (0.05)."""
+    connector = MagicMock()
+    connector.ensure_connected.return_value = True
+    connector.symbol_info_tick.return_value = MagicMock(ask=29140.0, bid=29139.0)
+    connector.symbol_info.return_value = MagicMock(
+        point=0.1,
+        trade_stops_level=0,
+        filling_mode=2,
+    )
+    connector.order_calc_margin.return_value = 728.50  # margin for 0.05 lots
+    connector.order_send.return_value = MagicMock(price=29140.0, order=999111, volume=0.05)
+
+    cfg = TradingConfig()
+    cfg.nas_max_lot = 0.05
+    entry = OrderEntry(connector, cfg)
+
+    sig = Signal(
+        id="sig_nas_clamp_test",
+        direction=TradeDirection.BUY,
+        entry_price=29140.0,
+        sl_price=29080.0,
+        tp_price=29260.0,
+        lot_size=1.43,
+        symbol="NAS100.x",
+    )
+    acc = AccountInfo(balance=4761.0, equity=4761.0, margin=0.0, margin_free=4761.0, margin_level=0.0, leverage=20)
+
+    leg = entry.place_market_order(
+        signal=sig,
+        account=acc,
+        point_value=0.1,
+        contract_size=1,
+    )
+
+    assert leg is not None
+    assert leg.lot_size == 0.05
+    # Verify order_send was invoked with clamped volume 0.05
+    sent_request = connector.order_send.call_args[0][0]
+    assert sent_request["volume"] == 0.05
+    assert sent_request["symbol"] == "NAS100.x"
+
+
+def test_gold_order_not_clamped_by_nas_max_lot():
+    """Verify that Gold entries are NOT restricted by nas_max_lot."""
+    connector = MagicMock()
+    connector.ensure_connected.return_value = True
+    connector.symbol_info_tick.return_value = MagicMock(ask=2650.0, bid=2649.5)
+    connector.symbol_info.return_value = MagicMock(
+        point=0.01,
+        trade_stops_level=0,
+        filling_mode=2,
+    )
+    connector.order_calc_margin.return_value = 265.0  # Gold margin
+    connector.order_send.return_value = MagicMock(price=2650.0, order=999222, volume=0.20)
+
+    cfg = TradingConfig()
+    cfg.nas_max_lot = 0.05
+    entry = OrderEntry(connector, cfg)
+
+    sig = Signal(
+        id="sig_xau_noclamp_test",
+        direction=TradeDirection.BUY,
+        entry_price=2650.0,
+        sl_price=2640.0,
+        tp_price=2670.0,
+        lot_size=0.20,
+        symbol="XAUUSD.x",
+    )
+    acc = AccountInfo(balance=4761.0, equity=4761.0, margin=0.0, margin_free=4761.0, margin_level=0.0, leverage=100)
+
+    leg = entry.place_market_order(
+        signal=sig,
+        account=acc,
+        point_value=1.0,
+        contract_size=100,
+    )
+
+    assert leg is not None
+    assert leg.lot_size == 0.20
+    sent_request = connector.order_send.call_args[0][0]
+    assert sent_request["volume"] == 0.20
+

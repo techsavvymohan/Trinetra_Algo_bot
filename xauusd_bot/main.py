@@ -840,6 +840,18 @@ class XAUUSDBot:
                 cluster.open_time = pos_time
                 cluster.highest_price = price_open
                 cluster.lowest_price = price_open
+                from .utils.asset_specs import get_asset_spec
+                spec = get_asset_spec(sym, price_open)
+                default_min_sl = 5.0 if spec.get("is_gold", True) else 10.0
+                sl_dist = abs(price_open - sl) if sl > 0 else default_min_sl
+                if sl_dist < 1.0:
+                    cluster.breakeven_activated = True
+                    cluster.initial_r_dist = default_min_sl
+                else:
+                    cluster.initial_r_dist = sl_dist
+                cluster.dynamic_t1_r = getattr(tc, "partial_tp_tranche1_r", 0.75)
+                cluster.dynamic_t2_r = getattr(tc, "partial_tp_tranche2_r", 2.20)
+                cluster.runner_trail_mult = getattr(tc, "runner_trail_atr_mult", 3.0)
                 self.cluster_mgr.add(cluster)
                 log.info(
                     "🛡️ Reconciled existing broker position: %s %s %.2f lots at %.2f (ticket=%d)",
@@ -983,6 +995,9 @@ class XAUUSDBot:
             ao_saucer=hierarchy_result.get("ao_saucer", False),
             ha_trend=hierarchy_result.get("ha_trend", ""),
             tradingview_recommendation=tv_rec,
+            dynamic_t1_r=getattr(getattr(self, "_vr_regime", None), "tranche1_r", 0.75),
+            dynamic_t2_r=getattr(getattr(self, "_vr_regime", None), "tranche2_r", 2.20),
+            runner_trail_mult=getattr(getattr(self, "_vr_regime", None), "runner_trail_mult", 3.0),
         )
         signal.grade = self.scorer.grade(signal)
         if signal.grade == SignalGrade.C:
@@ -1140,43 +1155,24 @@ class XAUUSDBot:
                             p_pts = (current_price - l.entry_price) if l.direction == TradeDirection.BUY else (l.entry_price - current_price)
                             is_idx = any(idx in symbol.upper() for idx in ("NAS", "USTEC", "TECH", "US100"))
                             c_sz = 1.0 if is_idx else 100.0
-                            cluster_pnl += p_pts * l.lot_size * c_sz
-
-                    # XAU G5/G5b tracker update
+                                     # XAU G5 tracker update
                     if ("XAU" in symbol or "GOLD" in symbol.upper()) and getattr(tc, "xau_consec_loss_guard", True):
                         if not hasattr(self, "_live_xau_g5_last_day"):
                             self._live_xau_g5_last_day = None
                             self._live_xau_g5_consec_losses = 0
                             self._live_xau_g5_paused_today = False
-                            self._live_xau_london_paused_today = False
-                            self._live_xau_london_won_today = False
                         if not getattr(self, "_live_xau_g5_paused_today", False):
                             max_consec = getattr(tc, "xau_consec_loss_max", 2)
                             if cluster_pnl > 0:
                                 self._live_xau_g5_consec_losses = 0
                                 log.info("[%s] G5: Win recorded — streak reset to 0", symbol)
-                                _close_h = now_utc.hour
-                                _close_m = now_utc.minute
-                                _in_london = tc.is_in_xau_london_killzone(now_utc) if hasattr(tc, "is_in_xau_london_killzone") else ((_close_h == 7 and _close_m >= 45) or (8 <= _close_h < 10) or (_close_h == 10 and _close_m <= 30))
-                                if _in_london:
-                                    self._live_xau_london_won_today = True
-                                    log.info("[%s] 🏆 London Win recorded at %02d:%02d UTC — London profits protected for today", symbol, _close_h, _close_m)
                             else:
                                 self._live_xau_g5_consec_losses = getattr(self, "_live_xau_g5_consec_losses", 0) + 1
-                                # G5b: check if this loss happened in London session
-                                _close_h = now_utc.hour
-                                _close_m = now_utc.minute
-                                _in_london = tc.is_in_xau_london_killzone(now_utc) if hasattr(tc, "is_in_xau_london_killzone") else ((_close_h == 7 and _close_m >= 45) or (8 <= _close_h < 10) or (_close_h == 10 and _close_m <= 30))
-                                if _in_london:
-                                    self._live_xau_london_paused_today = True
-                                    log.warning("[%s] 🛡️ G5b London SL Pause activated at %02d:%02d UTC — London entries blocked for today",
-                                                symbol, _close_h, _close_m)
                                 log.info("[%s] G5: SL hit — streak=%d (limit=%d)", symbol, self._live_xau_g5_consec_losses, max_consec)
                                 if self._live_xau_g5_consec_losses >= max_consec:
                                     self._live_xau_g5_paused_today = True
                                     log.warning("[%s] 🛡️ G5 XAU Consec-Loss Guard: %d consecutive SLs — ALL XAU entries paused for today",
                                                 symbol, self._live_xau_g5_consec_losses)
-
 
         # 0. Friday Weekend Guard: Auto-Flat Liquidation & Entry Shield (20:45 UTC cutoff)
         if getattr(tc, "friday_weekend_guard", True):
@@ -1201,10 +1197,6 @@ class XAUUSDBot:
 
                 return
 
-        # Tuesday trading check
-        if now_utc.weekday() == 1 and not getattr(tc, "tuesday_trade_enabled", True):
-            return
-
         # Check session active: Strict Killzones for Gold & US Cash Session for Nasdaq 100
         ecosystem_mode = getattr(tc, "xau_ecosystem_mode", True)
         h_utc = now_utc.hour
@@ -1212,11 +1204,8 @@ class XAUUSDBot:
         is_gold = "XAU" in symbol.upper() or "GOLD" in symbol.upper()
         is_index = any(idx in symbol.upper() for idx in ("NAS", "USTEC", "TECH", "US100"))
         if is_gold and getattr(tc, "xau_strict_killzones", True):
-            in_london = tc.is_in_xau_london_killzone(now_utc) if hasattr(tc, "is_in_xau_london_killzone") else ((h_utc == 7 and m_utc >= 45) or (8 <= h_utc < 10) or (h_utc == 10 and m_utc <= 30))
+            in_london = tc.is_in_xau_london_killzone(now_utc)
             in_ny_core = (13 < h_utc < 16) or (h_utc == 13 and m_utc >= 30) or (h_utc == 16 and m_utc <= 30)
-            # Friday NY Cutoff: Stop taking new entries on Friday NY session after London close (locks in Friday profit)
-            if getattr(tc, "friday_skip_ny_session", True) and now_utc.weekday() == 4:
-                in_ny_core = False
             cutoff_h = getattr(tc, "xau_session_cutoff_hour", 24)
             if cutoff_h < 24 and h_utc >= cutoff_h:
                 in_ny_core = False
@@ -1295,6 +1284,13 @@ class XAUUSDBot:
                     b_end = getattr(tc, "xau_ny_open_blackout_end_min", 33)
                     if ny_dt.hour == 9 and (b_start <= ny_dt.minute <= b_end):
                         log.debug("[%s] 🛡️ NY Open Blackout: 09:30 cash bell volatility buffer active (%02d:%02d NY) — retest execution paused",
+                                  symbol, ny_dt.hour, ny_dt.minute)
+                        continue
+                elif not is_gold and getattr(tc, "nas_enable_ny_open_blackout", True):
+                    b_start = getattr(tc, "nas_ny_open_blackout_start_min", 30)
+                    b_end = getattr(tc, "nas_ny_open_blackout_end_min", 34)
+                    if ny_dt.hour == 9 and (b_start <= ny_dt.minute <= b_end):
+                        log.debug("[%s] 🛡️ NAS NY Open Blackout: 09:30 cash bell buffer active (%02d:%02d NY) — retest execution paused",
                                   symbol, ny_dt.hour, ny_dt.minute)
                         continue
 
@@ -1557,20 +1553,46 @@ class XAUUSDBot:
             req_h1_lon = getattr(tc, "xau_london_require_h1_trend", True)
             early_london = in_london and ((h_utc == 7 and m_utc >= 45) or (h_utc == 8 and m_utc <= 30))
             if req_h1_all or early_london or (in_london and req_h1_lon):
+                h1_bias = None
+                m15_bias = None
                 h1_data = data_all.get("H1")
                 if h1_data and len(h1_data.close) >= 21:
                     from .indicators.moving_averages import ema
                     ema9 = ema(h1_data.close, 9)
                     ema21 = ema(h1_data.close, 21)
                     if ema9 is not None and ema21 is not None:
-                        macro_trend_bias = TradeDirection.BUY if ema9 > ema21 else TradeDirection.SELL
+                        h1_bias = TradeDirection.BUY if ema9 > ema21 else TradeDirection.SELL
 
-        # NY Open Opening-Bell Blackout Guard (09:28 - 09:33 NY)
+                if len(m15_closed.close) >= 21:
+                    from .indicators.moving_averages import ema
+                    m15_e9 = ema(m15_closed.close, 9)
+                    m15_e21 = ema(m15_closed.close, 21)
+                    if m15_e9 is not None and m15_e21 is not None:
+                        m15_bias = TradeDirection.BUY if m15_e9 > m15_e21 else TradeDirection.SELL
+
+                if h1_bias is not None and m15_bias is not None:
+                    macro_trend_bias = h1_bias if h1_bias == m15_bias else None
+                    if macro_trend_bias is None:
+                        log.debug("[%s] ⚖️ HTF Divergence: H1=%s vs M15=%s -> NEUTRAL",
+                                 symbol, h1_bias.value, m15_bias.value)
+                elif h1_bias is not None:
+                    macro_trend_bias = h1_bias
+                elif m15_bias is not None:
+                    macro_trend_bias = m15_bias
+
+        # NY Open Opening-Bell Blackout Guard (09:28 - 09:33 NY for Gold, 09:30 - 09:34 NY for Nasdaq)
         if is_gold and getattr(tc, "xau_enable_ny_open_blackout", True):
             b_start = getattr(tc, "xau_ny_open_blackout_start_min", 28)
             b_end = getattr(tc, "xau_ny_open_blackout_end_min", 33)
             if ny_dt.hour == 9 and (b_start <= ny_dt.minute <= b_end):
                 log.debug("[%s] 🛡️ NY Open Blackout: 09:30 cash bell volatility buffer active (%02d:%02d NY) — signals vetoed",
+                          symbol, ny_dt.hour, ny_dt.minute)
+                return
+        elif not is_gold and getattr(tc, "nas_enable_ny_open_blackout", True):
+            b_start = getattr(tc, "nas_ny_open_blackout_start_min", 30)
+            b_end = getattr(tc, "nas_ny_open_blackout_end_min", 34)
+            if ny_dt.hour == 9 and (b_start <= ny_dt.minute <= b_end):
+                log.debug("[%s] 🛡️ NAS NY Open Blackout: 09:30 cash bell buffer active (%02d:%02d NY) — signals vetoed",
                           symbol, ny_dt.hour, ny_dt.minute)
                 return
 
@@ -1596,6 +1618,24 @@ class XAUUSDBot:
         )
         if not seq:
             return
+
+        # Pure Sniper Guard: Hard-block all setups during choppy / compression regimes
+        if seq.get("is_chop", False) and getattr(tc, "xau_block_chop_regime", True):
+            log.info("[%s] 🛡️ Pure Sniper Guard: Market in Chop / Compression Regime (is_chop=True) — Setup Blocked", symbol)
+            return
+
+        # Guard against entering counter to immediate M15 structure momentum
+        if getattr(tc, "xau_require_m15_momentum_alignment", True):
+            if len(m15_closed.close) >= 21:
+                from .indicators.moving_averages import ema
+                m15_e9 = ema(m15_closed.close, 9)
+                m15_e21 = ema(m15_closed.close, 21)
+                if m15_e9 is not None and m15_e21 is not None:
+                    curr_m15_bias = TradeDirection.BUY if m15_e9 > m15_e21 else TradeDirection.SELL
+                    if seq["direction"] != curr_m15_bias:
+                        log.info("[%s] 🛡️ M15 Structure Filter: %s signal opposes M15 trend (%s) — Vetoed",
+                                 symbol, seq["direction"].value, curr_m15_bias.value)
+                        return
 
         # Prevent duplicate pending orders in the same direction
         if getattr(tc, "xau_prevent_duplicate_pending", True):
@@ -1627,6 +1667,10 @@ class XAUUSDBot:
         sig.setup_type = f"SWEEP_FVG_{sess_name}"
         sig.fvg_low = seq.get("fvg_low", 0.0)
         sig.fvg_high = seq.get("fvg_high", 0.0)
+        if vr:
+            sig.dynamic_t1_r = vr.tranche1_r
+            sig.dynamic_t2_r = vr.tranche2_r
+            sig.runner_trail_mult = vr.runner_trail_mult
 
         if is_gold and getattr(tc, "xau_h4_bias_guard", False):
             h4_bullish = getattr(self, "_xau_h4_bullish", None)
@@ -1667,12 +1711,6 @@ class XAUUSDBot:
             log.info("[%s] 🎯 Conviction Bet Sizing: grade=%s score=%s -> scale=%.2fx",
                      symbol, getattr(sig, "grade", "B"), getattr(sig, "score", 0), conv_scale)
 
-        # Tuesday Microstructure Guard: Scale risk on Tuesdays only if explicitly enabled
-        if now_utc.weekday() == 1 and getattr(tc, "tuesday_reduced_risk", False):
-            tue_scale = getattr(tc, "tuesday_risk_scale", 1.00)
-            risk_scale *= tue_scale
-            log.info("[%s] 🛡️ Tuesday Microstructure Guard active: Scaling base risk by %.2fx",
-                     symbol, tue_scale)
 
         use_moc = getattr(tc, "nas_require_retest", True) if is_index else getattr(tc, "xau_require_retest", True)
         if use_moc:
@@ -1740,9 +1778,12 @@ class XAUUSDBot:
                 return
 
         for cluster in clusters:
-            actions = self.trade_mgr.manage_exits(cluster, data_all)
+            sym = getattr(cluster, "symbol", "XAUUSD")
+            engine = self.coordinator.engines.get(sym) if hasattr(self, "coordinator") and self.coordinator else None
+            session_act = engine.is_session_active(now_utc) if engine else None
+            actions = self.trade_mgr.manage_exits(cluster, data_all, session_active=session_act)
             for action in actions:
-                log.info("Exit action [%s]: %s cluster=%s", getattr(cluster, "symbol", ""), action.get("action"), cluster.cluster_id[:8])
+                log.info("Exit action [%s]: %s cluster=%s", sym, action.get("action"), cluster.cluster_id[:8])
 
     def _close_all_positions(self, reason: str):
         for cluster in list(self.cluster_mgr.active):

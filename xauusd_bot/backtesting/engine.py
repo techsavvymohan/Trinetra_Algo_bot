@@ -190,9 +190,6 @@ class BacktestEngine:
             s_tz = getattr(self.cfg.trading, "xau_session_timezone", "America/New_York")
             from ..utils.time_utils import is_in_ny_session, to_ny_time
             if ecosystem_mode and current_time is not None:
-                if current_time.weekday() == 1 and not getattr(self.cfg.trading, "tuesday_trade_enabled", True):
-                    continue
-
                 h_utc = current_time.hour if hasattr(current_time, "hour") else 0
                 m_utc = current_time.minute if hasattr(current_time, "minute") else 0
                 spec_sym = get_asset_spec(self.symbol)
@@ -200,24 +197,13 @@ class BacktestEngine:
                 is_index = spec_sym["is_index"]
 
                 if getattr(self.cfg.trading, "xau_strict_killzones", True) and is_gold:
-                    # Friday filter: Skip entire day if Friday trading disabled for Gold
-                    if not getattr(self.cfg.trading, "xau_friday_trade_enabled", False) and current_time.weekday() == 4:
-                        continue
-
-                    # London Cash Open (08:00 - 10:30 UTC)
-                    lon_start_h = getattr(self.cfg.trading, "xau_london_start_hour", 8)
-                    lon_start_m = getattr(self.cfg.trading, "xau_london_start_minute", 0)
-                    in_london = (h_utc > lon_start_h or (h_utc == lon_start_h and m_utc >= lon_start_m)) and (h_utc < 10 or (h_utc == 10 and m_utc <= 30))
-                    if getattr(self.cfg.trading, "xau_friday_skip_london", False) and current_time.weekday() == 4:
-                        in_london = False
+                    in_london = self.cfg.trading.is_in_xau_london_killzone(current_time)
 
                     # NY Core Session (13:30 - 16:30 UTC cutoff)
                     ny_end_h = getattr(self.cfg.trading, "xau_london_close_cutoff_hour", 16)
                     ny_end_m = getattr(self.cfg.trading, "xau_london_close_cutoff_min", 30)
                     in_ny_core = (13 < h_utc < ny_end_h) or (h_utc == 13 and m_utc >= 30) or (h_utc == ny_end_h and m_utc <= ny_end_m)
 
-                    if getattr(self.cfg.trading, "friday_skip_ny_session", False) and current_time.weekday() == 4:
-                        in_ny_core = False
                     cutoff_h = getattr(self.cfg.trading, "xau_session_cutoff_hour", 24)
                     if cutoff_h < 24 and h_utc >= cutoff_h:
                         in_ny_core = False
@@ -442,7 +428,9 @@ class BacktestEngine:
                                 signal=sig,
                                 is_chop=getattr(sig, "is_chop", False),
                                 dynamic_t1_pct=getattr(sig, "dynamic_t1_pct", 25.0),
-                                dynamic_t1_r=getattr(sig, "dynamic_t1_r", 1.50),
+                                dynamic_t1_r=getattr(sig, "dynamic_t1_r", 0.75),
+                                dynamic_t2_r=getattr(sig, "dynamic_t2_r", 2.00),
+                                runner_trail_mult=getattr(sig, "runner_trail_mult", 3.0),
                             )
                             leg = TradeLeg(
                                 direction=sig.direction, entry_price=actual_entry_price, lot_size=po["lot_size"],
@@ -563,22 +551,6 @@ class BacktestEngine:
                                 professor_veto = True
                                 log.debug("[%s] G5 XAU Consec-Loss Guard: paused for rest of day (%d consecutive SLs)",
                                           self.symbol, self._xau_g5_consec_losses)
-                            # Guard 5b: London session SL pause
-                            # After 1 SL hit during London (07:45-10:30 UTC), block more London entries that day
-                            # This is MORE targeted than a hard trade count limit:
-                            # - Good days: 1st London trade wins -> no pause -> can take 2nd
-                            # - Bad days:  1st London trade loses -> London paused for day -> max 1 bad London trade
-                            elif not professor_veto:
-                                h_now = current_time.hour if current_time else 0
-                                m_now = current_time.minute if current_time else 0
-                                in_london_now = self.cfg.trading.is_in_xau_london_killzone(current_time) if hasattr(self.cfg.trading, "is_in_xau_london_killzone") else ((h_now == 7 and m_now >= 45) or (8 <= h_now < 10) or (h_now == 10 and m_now <= 30))
-                                if in_london_now:
-                                    if self._xau_london_paused_today:
-                                        professor_veto = True
-                                        log.debug("[%s] G5b London SL Pause: blocked London entry (lost London trade today)", self.symbol)
-                                    elif (getattr(self.cfg.trading, "xau_london_protect_profits", True) or getattr(self, "_test_london_win_done", False)) and self._xau_london_won_today:
-                                        professor_veto = True
-                                        log.debug("[%s] London Profit Protect: won London trade today, locked in profit", self.symbol)
 
                     # Friday Weekend Guard Entry Veto
                     if not professor_veto and getattr(self.cfg.trading, "friday_weekend_guard", True) and current_time is not None:
@@ -607,12 +579,6 @@ class BacktestEngine:
                                 risk_scale = getattr(self.cfg.trading, "correlated_usd_risk_scale", 0.60)
                         if getattr(self.cfg.trading, "enable_conviction_sizing", True) and hasattr(self.cfg.trading, "get_conviction_scale"):
                             risk_scale *= self.cfg.trading.get_conviction_scale(signal)
-                        if current_time.weekday() == 1 and getattr(self.cfg.trading, "tuesday_reduced_risk", False):
-                            tue_scale = getattr(self.cfg.trading, "tuesday_risk_scale", 1.00)
-                            risk_scale *= tue_scale
-                        if current_time.weekday() == 4 and "XAU" in self.symbol.upper():
-                            fri_scale = getattr(self.cfg.trading, "xau_friday_risk_scale", 1.00)
-                            risk_scale *= fri_scale
                         lot = self.sizer.calculate_lot_size(
                             account=account, entry_price=signal.entry_price, sl_price=signal.sl_price,
                             direction=signal.direction, point_value=point_val, contract_size=contract_sz,
@@ -627,7 +593,9 @@ class BacktestEngine:
                                     open_time=current_time, status=TradeStatus.OPEN,
                                     is_chop=getattr(signal, "is_chop", False),
                                     dynamic_t1_pct=getattr(signal, "dynamic_t1_pct", 25.0),
-                                    dynamic_t1_r=getattr(signal, "dynamic_t1_r", 1.50),
+                                    dynamic_t1_r=getattr(signal, "dynamic_t1_r", 0.75),
+                                    dynamic_t2_r=getattr(signal, "dynamic_t2_r", 2.00),
+                                    runner_trail_mult=getattr(signal, "runner_trail_mult", 3.0),
                                 )
                                 leg = TradeLeg(
                                     direction=signal.direction, entry_price=signal.entry_price, lot_size=lot,
@@ -730,22 +698,8 @@ class BacktestEngine:
                             max_consec = getattr(self.cfg.trading, "xau_consec_loss_max", 2)
                             if cluster_pnl > 0:
                                 self._xau_g5_consec_losses = 0
-                                if _entry_time is not None:
-                                    _h = _entry_time.hour if hasattr(_entry_time, 'hour') else 0
-                                    _m = _entry_time.minute if hasattr(_entry_time, 'minute') else 0
-                                    _in_lon = self.cfg.trading.is_in_xau_london_killzone(_entry_time) if hasattr(self.cfg.trading, "is_in_xau_london_killzone") else ((_h == 7 and _m >= 45) or (8 <= _h < 10) or (_h == 10 and _m <= 30))
-                                    if _in_lon:
-                                        self._xau_london_won_today = True
                             else:
                                 self._xau_g5_consec_losses += 1
-                                if _entry_time is not None:
-                                    _h = _entry_time.hour if hasattr(_entry_time, 'hour') else 0
-                                    _m = _entry_time.minute if hasattr(_entry_time, 'minute') else 0
-                                    _in_lon = self.cfg.trading.is_in_xau_london_killzone(_entry_time) if hasattr(self.cfg.trading, "is_in_xau_london_killzone") else ((_h == 7 and _m >= 45) or (8 <= _h < 10) or (_h == 10 and _m <= 30))
-                                    if _in_lon:
-                                        self._xau_london_paused_today = True
-                                        log.debug("[%s] G5b London SL pause activated (entry was %02d:%02d UTC)",
-                                                  self.symbol, _h, _m)
                                 log.debug("[%s] G5: SL hit #%d (streak=%d, limit=%d)",
                                           self.symbol, self._xau_g5_consec_losses, self._xau_g5_consec_losses, max_consec)
                                 if self._xau_g5_consec_losses >= max_consec:
@@ -961,11 +915,17 @@ class BacktestEngine:
                 _vr_min_atr_mult_lon = max(_base_lon_atr, _vr_min_atr_mult_ny) if vr else _base_lon_atr
                 _vr_min_body_lon = max(_base_lon_body, _vr_min_body_ny) if vr else _base_lon_body
 
-                # NY Open Opening-Bell Blackout Guard (09:28 - 09:33 NY)
+                # NY Open Opening-Bell Blackout Guard (09:28 - 09:33 NY for Gold, 09:30 - 09:34 NY for Nasdaq)
                 if is_gold and getattr(self.cfg.trading, "xau_enable_ny_open_blackout", True):
                     ny_dt_bt = to_ny_time(current_time, getattr(self.cfg.trading, "xau_session_timezone", "America/New_York"))
                     b_start = getattr(self.cfg.trading, "xau_ny_open_blackout_start_min", 28)
                     b_end = getattr(self.cfg.trading, "xau_ny_open_blackout_end_min", 33)
+                    if ny_dt_bt.hour == 9 and (b_start <= ny_dt_bt.minute <= b_end):
+                        in_ny_core = False
+                elif is_index and getattr(self.cfg.trading, "nas_enable_ny_open_blackout", True):
+                    ny_dt_bt = to_ny_time(current_time, getattr(self.cfg.trading, "xau_session_timezone", "America/New_York"))
+                    b_start = getattr(self.cfg.trading, "nas_ny_open_blackout_start_min", 30)
+                    b_end = getattr(self.cfg.trading, "nas_ny_open_blackout_end_min", 34)
                     if ny_dt_bt.hour == 9 and (b_start <= ny_dt_bt.minute <= b_end):
                         in_ny_core = False
 
@@ -998,7 +958,7 @@ class BacktestEngine:
                 # Tier 2: London Cash Open Killzone (07:45 - 10:30 UTC) with m15 swing sweeps
                 elif is_gold and getattr(self.cfg.trading, "xau_enable_london_asian_sweep", True) and (self.cfg.trading.is_in_xau_london_killzone(current_time) if hasattr(self.cfg.trading, "is_in_xau_london_killzone") else ((h_utc == 7 and m_utc >= 45) or (8 <= h_utc < 10) or (h_utc == 10 and m_utc <= 30))):
                     req_h1 = getattr(self.cfg.trading, "xau_require_h1_trend", True) or getattr(self.cfg.trading, "xau_london_require_h1_trend", True) or getattr(self, "_test_full_london_trend", False)
-                    early_london = (h_utc == 7 and m_utc >= 45) or (h_utc == 8 and m_utc <= 30)
+                    early_london = (h_utc == 7) or (h_utc == 8 and m_utc <= 30)
                     lon_trend_bias = h1_dir if (early_london or req_h1) else None
                     seq = self.trigger.detect_xau_scalp_sequence(
                         m15_data=m15_data,
@@ -1073,6 +1033,19 @@ class BacktestEngine:
 
             if not seq:
                 return None
+
+            if seq.get("is_chop", False) and getattr(self.cfg.trading, "xau_block_chop_regime", True):
+                return None
+
+            if getattr(self.cfg.trading, "xau_require_m15_momentum_alignment", True):
+                if len(m15_data.close) >= 21:
+                    from ..indicators.moving_averages import ema
+                    m15_e9 = ema(m15_data.close, 9)
+                    m15_e21 = ema(m15_data.close, 21)
+                    if m15_e9 is not None and m15_e21 is not None:
+                        curr_m15_bias = TradeDirection.BUY if m15_e9 > m15_e21 else TradeDirection.SELL
+                        if seq["direction"] != curr_m15_bias:
+                            return None
 
             direction = seq["direction"]
             entry_price = seq["entry_price"]
@@ -1203,7 +1176,10 @@ class BacktestEngine:
             signal.fvg_high = seq.get("fvg_high", 0.0)
             signal.is_chop = seq.get("is_chop", False)
             signal.dynamic_t1_pct = seq.get("dynamic_t1_pct", 25.0)
-            signal.dynamic_t1_r = seq.get("dynamic_t1_r", 1.50)
+            vr = getattr(self, '_current_regime', None)
+            signal.dynamic_t1_r = vr.tranche1_r if vr else seq.get("dynamic_t1_r", 0.75)
+            signal.dynamic_t2_r = vr.tranche2_r if vr else getattr(self.cfg.trading, "partial_tp_tranche2_r", 2.20)
+            signal.runner_trail_mult = vr.runner_trail_mult if vr else getattr(self.cfg.trading, "runner_trail_atr_mult", 3.0)
         if not is_fvg:
             signal.grade = self.scorer.grade(signal)
 
@@ -1404,7 +1380,7 @@ class BacktestEngine:
         bar_low = m1_slice.low[-1] if m1_slice and len(m1_slice.low) > 0 else price
         bar_high = m1_slice.high[-1] if m1_slice and len(m1_slice.high) > 0 else price
         enable_runner = getattr(self.cfg.trading, "enable_split_tranche_runner", True)
-        trail_mult = getattr(self.cfg.trading, "runner_trail_atr_mult", 2.0)
+        trail_mult = getattr(cluster, "runner_trail_mult", getattr(self.cfg.trading, "runner_trail_atr_mult", 2.0))
 
         for leg in list(cluster.legs):
             if leg.status != TradeStatus.OPEN:

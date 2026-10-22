@@ -49,11 +49,17 @@ class RegimeState:
     score: float = 0.0               # composite score in [-1, +1]
 
     # Adapted trade parameters
-    target_r: float = 1.40            # TP in R-multiples
+    target_r: float = 1.40            # TP in R-multiples (dynamically scaled)
     be_trigger_r: float = 0.70       # move SL to BE when price hits this R
     be_buffer_r: float = 0.10        # small profit buffer above entry at BE
     min_atr_mult: float = 0.60       # displacement minimum ATR multiplier
     min_body_ratio: float = 0.60     # displacement minimum body ratio
+
+    # Dynamic Volatility Scaling (Continuous ATR Expansion Index vs Fixed R)
+    expansion_ratio: float = 1.0     # continuous ATR expansion index (current_atr / ema(atr, lookback))
+    tranche1_r: float = 0.75         # quick partial TP for early risk-free breakeven lock
+    tranche2_r: float = 2.00         # dynamically scaled target for 2nd tranche
+    runner_trail_mult: float = 3.0   # dynamically scaled Chandelier trailing ATR multiplier
 
     # Diagnostics
     atr_ratio: float = 1.0           # current_atr / ema(atr, lookback)
@@ -91,8 +97,8 @@ class VolatilityRegimeEngine:
 
     # Output parameters per regime
     # TRENDING (composite >= 0.25): high-expansion breakout months
-    trending_target_r: float = 1.40
-    trending_be_trigger_r: float = 0.70
+    trending_target_r: float = 2.20
+    trending_be_trigger_r: float = 0.75
     trending_be_buffer_r: float = 0.10
     trending_min_atr_mult: float = 0.60
     trending_min_body_ratio: float = 0.60
@@ -104,13 +110,12 @@ class VolatilityRegimeEngine:
     neutral_min_atr_mult: float = 0.60
     neutral_min_body_ratio: float = 0.60
 
-    # COMPRESSED (composite <= -0.20): optimal baseline standard
-    compressed_target_r: float = 1.40
-    compressed_be_trigger_r: float = 0.70
-    compressed_be_buffer_r: float = 0.10
+    # COMPRESSED (composite <= -0.20): chop defense & quick banking
+    compressed_target_r: float = 1.10
+    compressed_be_trigger_r: float = 0.65
+    compressed_be_buffer_r: float = 0.08
     compressed_min_atr_mult: float = 0.60
     compressed_min_body_ratio: float = 0.60
-
 
     def classify(self, m15_data, m1_data=None) -> RegimeState:
         """
@@ -152,23 +157,46 @@ class VolatilityRegimeEngine:
 
         target_r, be_trigger, be_buf, min_atr, min_body = self._params(regime)
 
+        # Continuous ATR Expansion Factor clamped between [0.70, 2.50]
+        expansion_factor = max(0.70, min(2.50, atr_ratio))
+
+        if regime == "TRENDING":
+            dynamic_target_r = round(min(3.50, max(1.40, target_r * max(1.15, expansion_factor))), 2)
+            dynamic_t1_r = 0.75
+            dynamic_t2_r = round(min(4.50, 2.00 * max(1.15, expansion_factor)), 2)
+            dynamic_trail_mult = round(min(4.5, 3.0 * (1.0 + (expansion_factor - 1.0) * 0.4)), 1)
+        elif regime == "COMPRESSED":
+            dynamic_target_r = self.compressed_target_r
+            dynamic_t1_r = 0.65
+            dynamic_t2_r = 1.30
+            dynamic_trail_mult = 2.2
+        else:  # NEUTRAL
+            dynamic_target_r = self.neutral_target_r
+            dynamic_t1_r = 0.75
+            dynamic_t2_r = 2.00
+            dynamic_trail_mult = 3.0
+
         state = RegimeState(
             regime=regime,
             score=round(composite, 3),
-            target_r=target_r,
+            target_r=dynamic_target_r,
             be_trigger_r=be_trigger,
             be_buffer_r=be_buf,
             min_atr_mult=min_atr,
             min_body_ratio=min_body,
+            expansion_ratio=round(expansion_factor, 3),
+            tranche1_r=dynamic_t1_r,
+            tranche2_r=dynamic_t2_r,
+            runner_trail_mult=dynamic_trail_mult,
             atr_ratio=round(atr_ratio, 3),
             adx_proxy=round(adx_proxy, 2),
             body_ratio=round(body_ratio, 3),
         )
         log.debug(
-            "[VolatilityRegime] %s | score=%.3f | atr_ratio=%.3f | adx=%.1f | body=%.3f | "
-            "target_r=%.2f | be_trig=%.2f | min_atr=%.2f",
-            regime, composite, atr_ratio, adx_proxy, body_ratio,
-            target_r, be_trigger, min_atr,
+            "[VolatilityRegime] %s | score=%.3f | atr_ratio=%.3f | expansion=%.2f | "
+            "target_r=%.2f | t1_r=%.2f | t2_r=%.2f | trail_mult=%.1fx | be_trig=%.2f",
+            regime, composite, atr_ratio, expansion_factor,
+            dynamic_target_r, dynamic_t1_r, dynamic_t2_r, dynamic_trail_mult, be_trigger,
         )
         return state
 

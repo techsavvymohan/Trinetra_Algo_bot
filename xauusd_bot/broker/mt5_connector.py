@@ -20,6 +20,7 @@ class MT5Connector:
         self.cfg = cfg
         self._connected = False
         self._reconnect_attempts = 0
+        self._last_retcode = 0
         self._lock = threading.RLock()
 
     @property
@@ -34,43 +35,24 @@ class MT5Connector:
                 log.error("MetaTrader5 package is not installed. Please run: pip install MetaTrader5")
                 return False
 
-            # Priority 1: If an MT5 GUI terminal is already running on desktop, attach to it directly!
-            # This guarantees we never start a separate headless background terminal when GUI is open.
+            # Strict GUI Mode:
+            # Attach directly to MT5 GUI desktop application
             ok = False
-            attached_to_gui = False
-            try:
-                if mt5.initialize():
-                    attached_to_gui = True
-                    ok = True
-                    log.info("🖥️ Attached directly to active MT5 GUI desktop application")
-            except Exception:
-                attached_to_gui = False
-
-            if not attached_to_gui:
-                init_kwargs = {"timeout": self.cfg.timeout_ms}
-                if self.cfg.path and Path(self.cfg.path).exists():
-                    init_kwargs["path"] = self.cfg.path
-                if self.cfg.login:
-                    init_kwargs["login"] = self.cfg.login
-                if self.cfg.password:
-                    init_kwargs["password"] = self.cfg.password
-                if self.cfg.server:
-                    init_kwargs["server"] = self.cfg.server
-
-                ok = mt5.initialize(**init_kwargs)
+            if getattr(self.cfg, "path", None) and self.cfg.path:
+                ok = mt5.initialize(path=self.cfg.path)
+            else:
+                ok = mt5.initialize()
                 if not ok:
-                    err = mt5.last_error()
-                    log.warning("Direct MT5 initialize failed: %s — trying fallback attach & login...", err)
-                    # Fallback 1: Try attaching to existing running terminal or start path without credential parameters
-                    attached = mt5.initialize(path=self.cfg.path, timeout=self.cfg.timeout_ms) if (self.cfg.path and Path(self.cfg.path).exists()) else mt5.initialize(timeout=self.cfg.timeout_ms)
-                    if not attached:
-                        # Fallback 2: Attach to any active GUI terminal instance
-                        attached = mt5.initialize()
-                    ok = attached
+                    default_path = r"C:\Program Files\MetaTrader 5\terminal64.exe"
+                    import os
+                    if os.path.exists(default_path):
+                        ok = mt5.initialize(path=default_path)
 
             if not ok:
-                log.error("MT5 initialize failed completely: %s", mt5.last_error())
+                log.critical("Failed to attach to MT5 GUI terminal: %s. Please ensure MT5 is open on desktop.", mt5.last_error())
                 return False
+
+            log.info("🖥️ Attached directly to active MT5 GUI desktop application (Zero Background Terminal)")
 
             acc = mt5.account_info()
             if acc and self.cfg.login and getattr(acc, "login", 0) != self.cfg.login:
@@ -91,7 +73,7 @@ class MT5Connector:
             acc = mt5.account_info()
             actual_login = getattr(acc, "login", self.cfg.login)
             actual_server = getattr(acc, "server", self.cfg.server)
-            log.info("MT5 connected — account %s on %s", actual_login, actual_server)
+            log.info("MT5 GUI connected — account %s on %s", actual_login, actual_server)
             return True
 
     def disconnect(self):
@@ -270,11 +252,23 @@ class MT5Connector:
             trade_retcode_placed = getattr(mt5, "TRADE_RETCODE_PLACED", 10008)
             trade_retcode_partial = getattr(mt5, "TRADE_RETCODE_DONE_PARTIAL", 10010)
             trade_retcode_no_changes = getattr(mt5, "TRADE_RETCODE_NO_CHANGES", 10025)
-            acceptable_retcodes = {trade_retcode_done, trade_retcode_placed, trade_retcode_partial, trade_retcode_no_changes}
+            acceptable_retcodes = (trade_retcode_done, trade_retcode_placed, trade_retcode_partial, trade_retcode_no_changes)
+            self._last_retcode = getattr(result, "retcode", 0)
             if result.retcode not in acceptable_retcodes:
                 log.error("Order failed retcode=%d: %s", result.retcode, result.comment)
                 return None
             return result
+
+    def order_calc_margin(self, action: int, symbol: str, volume: float, price: float) -> Optional[float]:
+        with self._lock:
+            if mt5 is None or not self._connected:
+                return None
+            try:
+                margin = mt5.order_calc_margin(action, symbol, volume, price)
+                return float(margin) if margin is not None else None
+            except Exception as e:
+                log.warning("order_calc_margin failed for %s: %s", symbol, e)
+                return None
 
     def history_deals_get(self, from_date, to_date):
         with self._lock:

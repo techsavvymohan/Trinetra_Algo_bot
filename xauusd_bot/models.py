@@ -137,6 +137,8 @@ class Signal:
     is_chop: bool = False
     dynamic_t1_pct: Optional[float] = None
     dynamic_t1_r: Optional[float] = None
+    dynamic_t2_r: Optional[float] = None
+    runner_trail_mult: Optional[float] = None
 
     def blocked(self) -> bool:
         return any([self.news_blocked, self.spread_blocked, self.session_blocked, self.equity_blocked, self.sideways_blocked])
@@ -189,6 +191,8 @@ class PyraCluster:
     is_chop: bool = False
     dynamic_t1_pct: Optional[float] = None
     dynamic_t1_r: Optional[float] = None
+    dynamic_t2_r: Optional[float] = None
+    runner_trail_mult: Optional[float] = None
 
     def r_distance(self) -> float:
         """Return the initial risk distance (1R).
@@ -204,13 +208,20 @@ class PyraCluster:
             leg1 = self.legs[0]
             if leg1.entry_price > 0 and leg1.sl_price > 0:
                 dist = abs(leg1.entry_price - leg1.sl_price)
-                if dist > 0:
+                if dist >= 1.0:
                     self.initial_r_dist = dist
                     return dist
         avg_entry = self.avg_entry_price()
-        if avg_entry > 0 and self.collective_sl > 0 and abs(avg_entry - self.collective_sl) > 0:
-            return abs(avg_entry - self.collective_sl)
-        return 0.0
+        if avg_entry > 0 and self.collective_sl > 0 and abs(avg_entry - self.collective_sl) >= 1.0:
+            dist = abs(avg_entry - self.collective_sl)
+            self.initial_r_dist = dist
+            return dist
+        # Fallback to institutional default 1R scale ($5.00 for Gold, 10.0 for Index)
+        from .utils.asset_specs import get_asset_spec
+        spec = get_asset_spec(self.symbol, avg_entry)
+        default_r = 5.0 if spec.get("is_gold", True) else 10.0
+        self.initial_r_dist = default_r
+        return default_r
 
     def total_lot_size(self) -> float:
         return sum(leg.lot_size for leg in self.legs if leg.status == TradeStatus.OPEN)

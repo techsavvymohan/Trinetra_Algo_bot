@@ -178,15 +178,40 @@ class OrderEntry:
             self.reservation.release(signal.id, symbol)
             return None
 
+        volume = round(signal.lot_size, 2)
+        from ..utils.asset_specs import get_asset_spec, is_index_symbol
+        is_index = is_index_symbol(symbol, price)
+        if is_index:
+            nas_max = getattr(self.config, "nas_max_lot", 0.05)
+            if volume > nas_max:
+                log.warning("[%s] 🛡️ Index Margin Guard: Volume %.2f exceeds nas_max_lot %.2f -> clamped to %.2f",
+                            symbol, volume, nas_max, nas_max)
+                volume = nas_max
+
+        # Dynamic Margin Shield: verify required margin against free margin
+        req_margin = self.connector.order_calc_margin(order_type, symbol, volume, price)
+        free_margin = getattr(account, "margin_free", 0.0) if account else 0.0
+        if isinstance(req_margin, (int, float)) and req_margin > 0 and free_margin > 0:
+            max_margin_budget = free_margin * 0.25
+            if req_margin > max_margin_budget:
+                scaled_vol = round(volume * (max_margin_budget / req_margin), 2)
+                scaled_vol = max(min_lot, scaled_vol)
+                log.warning(
+                    "[%s] 🛡️ Margin Guard: Required margin $%.2f exceeds 25%% free margin ($%.2f). Scaled lot %.2f -> %.2f",
+                    symbol, req_margin, max_margin_budget, volume, scaled_vol
+                )
+                volume = scaled_vol
+
+        digits = get_asset_spec(symbol, price).get("digits", 2)
         filling_mode = self.get_filling_mode(symbol)
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": symbol,
-            "volume": signal.lot_size,
+            "volume": volume,
             "type": order_type,
-            "price": price,
-            "sl": signal.sl_price,
-            "tp": signal.tp_price,
+            "price": round(price, digits),
+            "sl": round(signal.sl_price, digits) if signal.sl_price > 0 else 0.0,
+            "tp": round(signal.tp_price, digits) if signal.tp_price > 0 else 0.0,
             "deviation": self.config.deviation_points,
             "magic": self.config.magic_number,
             "comment": comment or self.config.comment,
@@ -195,14 +220,17 @@ class OrderEntry:
         }
         result = self.connector.order_send(request)
         if result is None:
-            # Fallback across supported filling modes in case broker rejects mode (Error 10030)
-            fallback_modes = [m for m in (mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN) if m != filling_mode]
-            for alt_mode in fallback_modes:
-                log.info("Retrying order_send with fallback filling mode %d for %s", alt_mode, symbol)
-                request["type_filling"] = alt_mode
-                result = self.connector.order_send(request)
-                if result is not None:
-                    break
+            last_retcode = getattr(self.connector, "_last_retcode", 0)
+            if last_retcode == 10019:
+                log.warning("[%s] order_send rejected with retcode=10019 (No money); skipping filling mode retries", symbol)
+            else:
+                fallback_modes = [m for m in (mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN) if m != filling_mode]
+                for alt_mode in fallback_modes:
+                    log.info("Retrying order_send with fallback filling mode %d for %s", alt_mode, symbol)
+                    request["type_filling"] = alt_mode
+                    result = self.connector.order_send(request)
+                    if result is not None:
+                        break
 
         if result is None:
             self.reservation.release(signal.id, symbol)
@@ -228,29 +256,34 @@ class OrderEntry:
         else:
             log.debug("Execution slippage on %s: %.1f points", symbol, slippage_points)
 
+        filled_vol = getattr(result, "volume", volume) or volume
         leg = TradeLeg(
             position_ticket=result.order,
             symbol=symbol,
             direction=signal.direction,
             entry_price=result.price,
-            lot_size=signal.lot_size,
+            lot_size=filled_vol,
             sl_price=signal.sl_price,
             tp_price=signal.tp_price,
             open_time=datetime.now(timezone.utc).replace(tzinfo=None),
             status=TradeStatus.OPEN,
         )
         log.info("Order filled: %s %s %.2f lots at %.2f (ticket=%d)",
-                 symbol, signal.direction.value, signal.lot_size, result.price, result.order)
+                 symbol, signal.direction.value, filled_vol, result.price, result.order)
         return leg
 
     def modify_sl_tp(self, ticket: int, sl: float, tp: float, symbol: str = "") -> bool:
         if not self._validate_ticket(ticket):
             return False
+        sym = symbol or self.config.symbol
+        from ..utils.asset_specs import get_asset_spec
+        spec = get_asset_spec(sym, sl if sl > 0 else tp)
+        digits = spec.get("digits", 2)
         request = {
             "action": mt5.TRADE_ACTION_SLTP,
             "position": ticket,
-            "sl": sl,
-            "tp": tp,
+            "sl": round(sl, digits) if sl > 0 else 0.0,
+            "tp": round(tp, digits) if tp > 0 else 0.0,
         }
         if symbol:
             request["symbol"] = symbol
@@ -260,6 +293,7 @@ class OrderEntry:
         return True
 
     def close_position(self, ticket: int, volume: float, direction: TradeDirection, symbol: str = "") -> bool:
+        volume = round(volume, 2)
         if not self._validate_ticket(ticket) or not self._validate_lot(volume):
             return False
         sym = symbol or self.config.symbol
@@ -328,22 +362,46 @@ class OrderEntry:
         order_type = mt5.ORDER_TYPE_BUY_LIMIT if signal.direction == TradeDirection.BUY else mt5.ORDER_TYPE_SELL_LIMIT
         filling_mode = self.get_filling_mode(symbol)
 
+        volume = round(signal.lot_size, 2)
+        from ..utils.asset_specs import get_asset_spec, is_index_symbol
+        is_index = is_index_symbol(symbol, limit_price)
+        if is_index:
+            nas_max = getattr(self.config, "nas_max_lot", 0.05)
+            if volume > nas_max:
+                log.warning("[%s] 🛡️ Index Margin Guard: Limit volume %.2f exceeds nas_max_lot %.2f -> clamped to %.2f",
+                            symbol, volume, nas_max, nas_max)
+                volume = nas_max
+
+        req_margin = self.connector.order_calc_margin(order_type, symbol, volume, limit_price)
+        free_margin = getattr(account, "margin_free", 0.0) if account else 0.0
+        if isinstance(req_margin, (int, float)) and req_margin > 0 and free_margin > 0:
+            max_margin_budget = free_margin * 0.25
+            if req_margin > max_margin_budget:
+                scaled_vol = round(volume * (max_margin_budget / req_margin), 2)
+                scaled_vol = max(min_lot, scaled_vol)
+                log.warning(
+                    "[%s] 🛡️ Margin Guard: Required margin $%.2f exceeds 25%% free margin budget ($%.2f). Scaled limit lot %.2f -> %.2f",
+                    symbol, req_margin, max_margin_budget, volume, scaled_vol
+                )
+                volume = scaled_vol
+
         # Whale Iceberg Slicing Check
         whale_thresh = getattr(self.config, "whale_slice_threshold_lots", 10.0)
         max_slice = getattr(self.config, "whale_max_child_slice_lots", 5.0)
-        if IcebergOrderSlicer.needs_slicing(signal.lot_size, threshold=whale_thresh):
-            slices = IcebergOrderSlicer.slice_order(signal.lot_size, max_slice=max_slice)
+        if IcebergOrderSlicer.needs_slicing(volume, threshold=whale_thresh):
+            slices = IcebergOrderSlicer.slice_order(volume, max_slice=max_slice)
             log.info("[%s] Whale Iceberg Slicer: decomposed %.2f lots into %d child slices: %s",
-                     symbol, signal.lot_size, len(slices), slices)
+                     symbol, volume, len(slices), slices)
 
+        digits = get_asset_spec(symbol, limit_price).get("digits", 2)
         request = {
             "action": mt5.TRADE_ACTION_PENDING,
             "symbol": symbol,
-            "volume": signal.lot_size,
+            "volume": volume,
             "type": order_type,
-            "price": limit_price,
-            "sl": signal.sl_price,
-            "tp": signal.tp_price,
+            "price": round(limit_price, digits),
+            "sl": round(signal.sl_price, digits) if signal.sl_price > 0 else 0.0,
+            "tp": round(signal.tp_price, digits) if signal.tp_price > 0 else 0.0,
             "deviation": self.config.deviation_points,
             "magic": self.config.magic_number,
             "comment": comment,
@@ -352,15 +410,17 @@ class OrderEntry:
         }
         result = self.connector.order_send(request)
         if result is None:
-            fallback_modes = [m for m in (mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN) if m != filling_mode]
-            for alt_mode in fallback_modes:
-                request["type_filling"] = alt_mode
-                result = self.connector.order_send(request)
-                if result is not None:
-                    break
+            last_retcode = getattr(self.connector, "_last_retcode", 0)
+            if last_retcode == 10019:
+                log.warning("[%s] limit order_send rejected with retcode=10019 (No money); skipping filling mode retries", symbol)
+            else:
+                fallback_modes = [m for m in (mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN) if m != filling_mode]
+                for alt_mode in fallback_modes:
+                    request["type_filling"] = alt_mode
+                    result = self.connector.order_send(request)
+                    if result is not None:
+                        break
 
-        from ..utils.asset_specs import get_asset_spec
-        digits = get_asset_spec(symbol, limit_price).get("digits", 2)
         fmt = f".{digits}f"
         if result is None:
             log.error(f"Failed placing limit order on {symbol} at {limit_price:{fmt}}")
@@ -375,13 +435,13 @@ class OrderEntry:
             symbol=symbol,
             direction=signal.direction,
             entry_price=limit_price,
-            lot_size=signal.lot_size,
+            lot_size=volume,
             sl_price=signal.sl_price,
             tp_price=signal.tp_price,
             open_time=datetime.now(timezone.utc).replace(tzinfo=None),
             status=TradeStatus.PENDING,
         )
-        log.info(f"Limit order placed: {symbol} {signal.direction.value} {signal.lot_size:.2f} lots at {limit_price:{fmt}} (ticket={result.order})")
+        log.info(f"Limit order placed: {symbol} {signal.direction.value} {volume:.2f} lots at {limit_price:{fmt}} (ticket={result.order})")
         return leg
 
     def cancel_order(self, ticket: int, signal_id: Optional[str] = None, symbol: Optional[str] = None) -> bool:

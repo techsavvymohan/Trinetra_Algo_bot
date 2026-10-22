@@ -63,6 +63,9 @@ class BaseSymbolEngine(ABC):
         # Isolated state per symbol
         self.session_trades: int = 0
         self.last_exit_time: Optional[datetime] = None
+        self.last_loss_time: Optional[datetime] = None
+        self.last_loss_pnl: float = 0.0
+        self._loss_restored: bool = False
         self.current_session_date: Optional[object] = None
         self.consec_losses: int = 0
         self.paused_today: bool = False
@@ -90,10 +93,16 @@ class BaseSymbolEngine(ABC):
         """
         pass
 
-    @abstractmethod
     def on_position_closed(self, cluster_pnl: float, now_utc: datetime, exit_reason: ExitReason):
         """Callback invoked when a position on this symbol is closed (SL, TP, or manual)."""
-        pass
+        self.last_exit_time = now_utc.replace(tzinfo=None)
+        if cluster_pnl < 0:
+            self.last_loss_time = now_utc.replace(tzinfo=None)
+            self.last_loss_pnl = cluster_pnl
+            is_gold = "XAU" in self.symbol.upper() or "GOLD" in self.symbol.upper()
+            loss_cd_min = getattr(self.cfg.trading, "xau_post_loss_cooldown_minutes", 60) if is_gold else getattr(self.cfg.trading, "nas_post_loss_cooldown_minutes", 15)
+            log.warning("[%s] 🛡️ Post-Loss Cooldown Enforced: %d minutes pause (loss: $%.2f)",
+                        self.symbol, loss_cd_min, cluster_pnl)
 
     @abstractmethod
     def get_min_sl_distance(self, current_price: float, m1_atr: float) -> float:
@@ -238,6 +247,15 @@ class BaseSymbolEngine(ABC):
                         log.debug("[%s] 🛡️ NY Open Blackout: 09:30 cash bell volatility buffer active (%02d:%02d NY) — retest execution paused",
                                   self.symbol, ny_dt.hour, ny_dt.minute)
                         continue
+                elif not is_gold and getattr(tc, "nas_enable_ny_open_blackout", True):
+                    from ..utils.time_utils import to_ny_time
+                    ny_dt = to_ny_time(now_utc, getattr(tc, "xau_session_timezone", "America/New_York"))
+                    b_start = getattr(tc, "nas_ny_open_blackout_start_min", 30)
+                    b_end = getattr(tc, "nas_ny_open_blackout_end_min", 34)
+                    if ny_dt.hour == 9 and (b_start <= ny_dt.minute <= b_end):
+                        log.debug("[%s] 🛡️ NAS NY Open Blackout: 09:30 cash bell buffer active (%02d:%02d NY) — retest execution paused",
+                                  self.symbol, ny_dt.hour, ny_dt.minute)
+                        continue
 
                 fvg_span = abs(fvg_h - fvg_l) if (fvg_h > 0 and fvg_l > 0) else 0.0
                 tol = max(0.25, fvg_span * fvg_tol_pct) if is_gold else max(1.0, fvg_span * fvg_tol_pct)
@@ -335,10 +353,17 @@ class BaseSymbolEngine(ABC):
     def manage_active_exits(self, data_all: Dict[str, TimeframeData]):
         """Manage exits, breakeven ratchets, and partial closes for open positions."""
         clusters = [c for c in self.cluster_mgr.active_clusters_for_symbol(self.symbol) if c.status == TradeStatus.OPEN]
+        now_utc = datetime.now(timezone.utc)
+        session_active = self.is_session_active(now_utc)
         for cluster in clusters:
-            actions = self.trade_mgr.manage_exits(cluster, data_all)
+            actions = self.trade_mgr.manage_exits(cluster, data_all, session_active=session_active)
             for action in actions:
                 log.info("[%s] Exit action: %s cluster=%s", self.symbol, action.get("action"), cluster.cluster_id[:8])
+            if cluster.status == TradeStatus.CLOSED:
+                now_utc = datetime.now(timezone.utc)
+                self.last_exit_time = now_utc.replace(tzinfo=None)
+                cluster_pnl = sum(getattr(l, "pnl", 0.0) for l in cluster.legs)
+                self.on_position_closed(cluster_pnl, now_utc, ExitReason.STOP_LOSS if cluster_pnl < 0 else ExitReason.TAKE_PROFIT)
 
     def step(self, account_info: AccountInfo, now: float) -> bool:
         """Execute one complete lifecycle step for this symbol engine.
@@ -349,6 +374,31 @@ class BaseSymbolEngine(ABC):
         tc = self.cfg.trading
         now_utc = datetime.now(timezone.utc)
         ny_dt = to_ny_time(now_utc, getattr(tc, "xau_session_timezone", "America/New_York"))
+
+        # One-time startup restoration of recent loss from broker deals
+        if not self._loss_restored and hasattr(self.connector, "history_deals_get"):
+            self._loss_restored = True
+            try:
+                from datetime import timedelta
+                deals = self.connector.history_deals_get(now_utc - timedelta(hours=3), now_utc)
+                if deals:
+                    for d in reversed(deals):
+                        sym = getattr(d, "symbol", "")
+                        pnl = getattr(d, "profit", 0.0)
+                        if self.symbol in sym and pnl < -1.0:
+                            d_ts = getattr(d, "time", 0)
+                            if d_ts > 0:
+                                deal_time = datetime.fromtimestamp(d_ts, tz=timezone.utc).replace(tzinfo=None)
+                                self.last_loss_time = deal_time
+                                is_gold = "XAU" in self.symbol.upper() or "GOLD" in self.symbol.upper()
+                                loss_cd = getattr(tc, "xau_post_loss_cooldown_minutes", 60) if is_gold else getattr(tc, "nas_post_loss_cooldown_minutes", 15)
+                                elapsed = (now_utc.replace(tzinfo=None) - deal_time).total_seconds() / 60.0
+                                if elapsed < loss_cd:
+                                    log.warning("[%s] 🛡️ Active Post-Loss Cooldown: %.1f / %d mins remaining (Loss: $%.2f at %s UTC)",
+                                                self.symbol, loss_cd - elapsed, loss_cd, pnl, deal_time.strftime("%H:%M:%S"))
+                                break
+            except Exception as e:
+                log.debug("[%s] Error checking recent loss deals: %s", self.symbol, e)
 
         # Daily reset for session trade counters
         today_date = ny_dt.date()
@@ -441,10 +491,19 @@ class BaseSymbolEngine(ABC):
         if self.session_trades >= max_daily_trades:
             return True
 
-        # Cooldown check
+        # 1. Post-loss cooldown: 60 mins for gold, 15 mins for nasdaq
+        now_utc_naive = now_utc.replace(tzinfo=None)
+        if self.last_loss_time:
+            is_gold = "XAU" in self.symbol.upper() or "GOLD" in self.symbol.upper()
+            loss_cd_min = getattr(tc, "xau_post_loss_cooldown_minutes", 60) if is_gold else getattr(tc, "nas_post_loss_cooldown_minutes", 15)
+            elapsed_loss_cd = (now_utc_naive - self.last_loss_time).total_seconds() / 60.0
+            if elapsed_loss_cd < loss_cd_min:
+                return True
+
+        # 2. Standard exit cooldown: 5 mins
         if self.last_exit_time:
             cooldown_min = getattr(tc, "xau_cooldown_minutes", 5)
-            elapsed_cd = (now_utc.replace(tzinfo=None) - self.last_exit_time).total_seconds() / 60.0
+            elapsed_cd = (now_utc_naive - self.last_exit_time).total_seconds() / 60.0
             if elapsed_cd < cooldown_min:
                 return True
 

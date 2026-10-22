@@ -81,11 +81,12 @@ class PartialCloseManager:
             move_r = (current_price - avg_entry) / r_dist
         else:
             move_r = (avg_entry - current_price) / r_dist
-        if move_r >= self.tranche2_r:
+        target_t2 = getattr(cluster, "dynamic_t2_r", None) or self.tranche2_r or 2.20
+        if move_r >= target_t2:
             cluster.partial_tp2_hit = True
             self._tranche2_hit.add(cluster_id)
-            log.info("Partial TP Tranche 2 triggered: cluster=%s move=%.2fR pct=%.0f%%",
-                     cluster_id[:8], move_r, self.tranche2_pct or 35.0)
+            log.info("Partial TP Tranche 2 triggered: cluster=%s move=%.2fR (target=%.2fR) pct=%.0f%%",
+                     cluster_id[:8], move_r, target_t2, self.tranche2_pct or 35.0)
             return True
         return False
 

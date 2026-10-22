@@ -5,14 +5,14 @@ from xauusd_bot.config import Config, TradingConfig
 def test_symbol_specific_defaults():
     tc = TradingConfig()
     # Gold defaults
-    assert tc.get_target_r("XAUUSD") == 2.0
-    assert tc.get_breakeven_trigger_r("XAUUSD") == 1.5
+    assert tc.get_target_r("XAUUSD") == 1.40
+    assert tc.get_breakeven_trigger_r("XAUUSD") == 0.70
     assert tc.get_max_holding_bars("XAUUSD") == 0
     assert tc.xau_session_cutoff_hour == 24
 
     # Nasdaq 100 dedicated defaults
     assert tc.get_target_r("USTECH100M") == 2.0
-    assert tc.get_breakeven_trigger_r("USTECH100M") == 1.5
+    assert tc.get_breakeven_trigger_r("USTECH100M") == 1.50
     assert tc.get_max_holding_bars("USTECH100M") == 0
     assert tc.get_risk_per_trade("USTECH100M") == 0.02
     assert tc.nas_session_start_hour == 13
@@ -23,7 +23,7 @@ def test_symbol_specific_case_insensitivity():
     tc = TradingConfig()
     assert tc.get_target_r("ustech100m") == 2.0
     assert tc.get_target_r("NAS100") == 2.0
-    assert tc.get_target_r("xauusd") == 2.0
+    assert tc.get_target_r("xauusd") == 1.40
     assert tc.get_max_holding_bars("nas100") == 0
     assert tc.get_max_holding_bars("xauusd") == 0
     assert tc.get_risk_per_trade("ustech100m") == 0.02
@@ -48,8 +48,8 @@ def test_symbol_specific_env_overrides(monkeypatch):
     assert tc.get_risk_per_trade("USTECH100M") == 0.02
 
     # Ensure Gold remains unchanged
-    assert tc.get_target_r("XAUUSD") == 2.0
-    assert tc.get_breakeven_trigger_r("XAUUSD") == 1.5
+    assert tc.get_target_r("XAUUSD") == 1.40
+    assert tc.get_breakeven_trigger_r("XAUUSD") == 0.70
     assert tc.get_max_holding_bars("XAUUSD") == 0
 
 def test_symbol_specific_min_sl_distance():
