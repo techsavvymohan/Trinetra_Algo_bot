@@ -95,7 +95,7 @@ class TradingConfig:
 
     # Dynamic Conviction-Weighted Bet Sizing (Institutional Kelly Factor)
     enable_conviction_sizing: bool = True
-    conviction_scale_a_plus: float = 2.60  # Proven Grade A+ Unicorn conviction multiplier for Gold
+    conviction_scale_a_plus: float = 1.00  # Standardized uniform risk sizing (zero asymmetric over-leveraging)
     conviction_scale_a: float = 1.00
     conviction_scale_b: float = 1.00
     conviction_scale_c: float = 0.60
@@ -109,7 +109,7 @@ class TradingConfig:
     tuesday_reduced_risk: bool = False
     tuesday_risk_scale: float = 1.00
     tuesday_trade_enabled: bool = True
-    tuesday_breakeven_trigger_r: float = 0.70  # Standardized 0.70R breakeven trigger
+    tuesday_breakeven_trigger_r: float = 1.00  # Standardized 1.00R breakeven trigger
 
     # Universal Capital Adapter & Whale Iceberg Slicing
     enable_universal_capital_adapter: bool = True
@@ -203,7 +203,7 @@ class TradingConfig:
     xau_invalidation_outside_window_only: bool = True  # Specifically guards out-of-window holding to protect profits & prevent adverse overnight shifts
     xau_enable_pre_fill_guard: bool = True
     xau_breakeven_ratchet_enabled: bool = True
-    xau_breakeven_trigger_r: float = 0.70
+    xau_breakeven_trigger_r: float = 1.00
     xau_breakeven_buffer_r: float = 0.10
     xau_stagnation_exit_enabled: bool = False
     xau_stagnation_bars: int = 0

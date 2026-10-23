@@ -112,6 +112,6 @@ def test_anti_trap_inversion_short():
     assert seq is not None
     assert seq["direction"] == TradeDirection.SELL
     assert seq["anti_trap_inversion"] is True
-    assert seq["entry_price"] == 1997.0
+    assert seq["entry_price"] == 2000.0  # Robust mitigation retest level (FVG underside)
     assert seq["sl_price"] > seq["entry_price"]
     assert seq["tp_price"] < seq["entry_price"]

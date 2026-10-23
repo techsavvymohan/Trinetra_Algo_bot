@@ -6,7 +6,7 @@ def test_symbol_specific_defaults():
     tc = TradingConfig()
     # Gold defaults
     assert tc.get_target_r("XAUUSD") == 1.40
-    assert tc.get_breakeven_trigger_r("XAUUSD") == 0.70
+    assert tc.get_breakeven_trigger_r("XAUUSD") == 1.00
     assert tc.get_max_holding_bars("XAUUSD") == 0
     assert tc.xau_session_cutoff_hour == 24
 

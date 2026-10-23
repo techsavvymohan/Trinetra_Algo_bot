@@ -380,7 +380,7 @@ def test_backtest_broker_friction_and_breakeven_parity():
     engine = BacktestEngine(cfg)
 
     # 1. Check breakeven trigger and buffer
-    assert cfg.trading.get_breakeven_trigger_r("XAUUSD") == 0.70
+    assert cfg.trading.get_breakeven_trigger_r("XAUUSD") == 1.00
     assert cfg.trading.get_breakeven_buffer_r("XAUUSD") == 0.10
     assert cfg.trading.get_breakeven_trigger_r("USTECH100M") == 1.50
     assert cfg.trading.get_breakeven_buffer_r("USTECH100M") == 0.10

@@ -701,89 +701,116 @@ class TriggerDetector:
                                         }
 
         # -------------------------------------------------------------
-        # 5. Anti-Trap Inducement Inversion Engine (IFVG)
-        # When macro trend is active, any counter-trend M1 FVG trap that inverts
-        # triggers a high-conviction trend-continuation entry!
+        # -------------------------------------------------------------
+        # 5. Robust Sweep-Anchored Inversion FVG (Anti-Trap) Engine
+        # When an opposing FVG forms during/after a liquidity sweep attempt
+        # and gets cleanly inverted by institutional expansion, registers
+        # the inverted zone for Market-on-Confirmation (MoC) retest entry!
         # -------------------------------------------------------------
         if enable_anti_trap and trend_bias is not None:
+            min_gap_pts = max(0.35 * (10.0 if curr_c > 5000 else 1.0), 0.20 * m1_atr)
+
             if trend_bias == TradeDirection.SELL:
-                # Scan recent sequence window for a failed counter-trend Bullish FVG (h[k-2] < l[k])
-                for k in range(max(2, n1 - sequence_window_m1), n1):
-                    if h1[k - 2] < l1[k]:
-                        fvg_low = h1[k - 2]
-                        fvg_high = l1[k]
-                        # Inversion breakdown: current close breaks below fvg_low
-                        if curr_c < fvg_low and curr_c >= (fvg_low - 3.5 * m1_atr):
-                            recent_high = max(h1[k - 2:])
-                            structural_sl = recent_high + atr_pad
-                            risk = structural_sl - curr_c
-                            effective_min_sl = min_sl_distance
-                            if curr_c > 1000:
-                                effective_min_sl = max(effective_min_sl, m1_atr * 2.0 if m1_atr > 0 else 5.0)
-                            if effective_min_sl > 0 and risk < effective_min_sl:
-                                risk = effective_min_sl
-                                structural_sl = curr_c + risk
-                            if risk > 0:
-                                tp = curr_c - (risk * target_r)
-                                return {
-                                    "direction": TradeDirection.SELL,
-                                    "bsl": bsl,
-                                    "ssl": ssl,
-                                    "swept_level": fvg_low,
-                                    "sweep_direction": "INVERSION_FVG_BREAKDOWN",
-                                    "sweep_high": recent_high,
-                                    "mss_level": fvg_low,
-                                    "fvg_low": fvg_low,
-                                    "fvg_high": fvg_high,
-                                    "entry_price": round(curr_c, digits),
-                                    "sl_price": round(structural_sl, digits),
-                                    "tp_price": round(tp, digits),
-                                    "risk_distance": round(risk, digits),
-                                    "target_r": target_r,
-                                    "atr": round(m1_atr, 4 if digits == 2 else 6),
-                                    "is_chop": is_chop,
-                                    "setup_type": "INVERSION_FVG_ANTI_TRAP",
-                                    "anti_trap_inversion": True,
-                                }
+                # Bearish setup: Price must have attempted/completed a BSL sweep or recent high sweep
+                window_start = max(0, n1 - sequence_window_m1)
+                sub_range = range(window_start, n1 - 1)
+                sweep_idx = max(sub_range, key=lambda idx: h1[idx]) if sub_range else window_start
+                max_h_prior = h1[sweep_idx]
+                sweep_ok = (bsl is not None and max_h_prior > bsl) or (max_h_prior >= max(h1[window_start:n1]))
+                if sweep_ok:
+                    # Scan for a counter-trend Bullish FVG (h[k-2] < l[k]) formed during the sweep
+                    for k in range(max(2, sweep_idx), n1):
+                        if h1[k - 2] < l1[k]:
+                            fvg_low = h1[k - 2]
+                            fvg_high = l1[k]
+                            fvg_span = fvg_high - fvg_low
+                            if fvg_span >= min_gap_pts:
+                                # Inversion breakdown: closed cleanly below fvg_low with bearish candle
+                                if curr_c < fvg_low and curr_c <= (o1[-1] if len(o1) >= n1 else curr_c):
+                                    recent_high = float(max(h1[max(0, sweep_idx - 1):n1]))
+                                    structural_sl = recent_high + atr_pad
+                                    # Institutional Mitigation Entry Level: the inverted FVG support-turned-resistance
+                                    entry_price = fvg_low
+                                    risk = structural_sl - entry_price
+                                    effective_min_sl = min_sl_distance
+                                    if curr_c > 1000:
+                                        effective_min_sl = max(effective_min_sl, m1_atr * 2.0 if m1_atr > 0 else 5.0)
+                                    if effective_min_sl > 0 and risk < effective_min_sl:
+                                        risk = effective_min_sl
+                                        structural_sl = entry_price + risk
+                                    if risk > 0:
+                                        tp = entry_price - (risk * target_r)
+                                        return {
+                                            "direction": TradeDirection.SELL,
+                                            "bsl": bsl,
+                                            "ssl": ssl,
+                                            "swept_level": fvg_low,
+                                            "sweep_direction": "SWEEP_INVERSION_FVG_BREAKDOWN",
+                                            "sweep_high": recent_high,
+                                            "mss_level": fvg_low,
+                                            "fvg_low": fvg_low,
+                                            "fvg_high": fvg_high,
+                                            "entry_price": round(entry_price, digits),
+                                            "sl_price": round(structural_sl, digits),
+                                            "tp_price": round(tp, digits),
+                                            "risk_distance": round(risk, digits),
+                                            "target_r": target_r,
+                                            "atr": round(m1_atr, 4 if digits == 2 else 6),
+                                            "is_chop": is_chop,
+                                            "setup_type": "SWEEP_INVERSION_FVG_ANTI_TRAP",
+                                            "anti_trap_inversion": True,
+                                        }
+
             elif trend_bias == TradeDirection.BUY:
-                # Scan recent sequence window for a failed counter-trend Bearish FVG (l[k-2] > h[k])
-                for k in range(max(2, n1 - sequence_window_m1), n1):
-                    if l1[k - 2] > h1[k]:
-                        fvg_low = h1[k]
-                        fvg_high = l1[k - 2]
-                        # Inversion breakout: current close breaks above fvg_high
-                        if curr_c > fvg_high and curr_c <= (fvg_high + 3.5 * m1_atr):
-                            recent_low = min(l1[k - 2:])
-                            structural_sl = recent_low - atr_pad
-                            risk = curr_c - structural_sl
-                            effective_min_sl = min_sl_distance
-                            if curr_c > 1000:
-                                effective_min_sl = max(effective_min_sl, m1_atr * 2.0 if m1_atr > 0 else 5.0)
-                            if effective_min_sl > 0 and risk < effective_min_sl:
-                                risk = effective_min_sl
-                                structural_sl = curr_c - risk
-                            if risk > 0:
-                                tp = curr_c + (risk * target_r)
-                                return {
-                                    "direction": TradeDirection.BUY,
-                                    "bsl": bsl,
-                                    "ssl": ssl,
-                                    "swept_level": fvg_high,
-                                    "sweep_direction": "INVERSION_FVG_BREAKOUT",
-                                    "sweep_low": recent_low,
-                                    "mss_level": fvg_high,
-                                    "fvg_low": fvg_low,
-                                    "fvg_high": fvg_high,
-                                    "entry_price": round(curr_c, digits),
-                                    "sl_price": round(structural_sl, digits),
-                                    "tp_price": round(tp, digits),
-                                    "risk_distance": round(risk, digits),
-                                    "target_r": target_r,
-                                    "atr": round(m1_atr, 4 if digits == 2 else 6),
-                                    "is_chop": is_chop,
-                                    "setup_type": "INVERSION_FVG_ANTI_TRAP",
-                                    "anti_trap_inversion": True,
-                                }
+                # Bullish setup: Price must have attempted/completed an SSL sweep or recent low sweep
+                window_start = max(0, n1 - sequence_window_m1)
+                sub_range = range(window_start, n1 - 1)
+                sweep_idx = min(sub_range, key=lambda idx: l1[idx]) if sub_range else window_start
+                min_l_prior = l1[sweep_idx]
+                sweep_ok = (ssl is not None and min_l_prior < ssl) or (min_l_prior <= min(l1[window_start:n1]))
+                if sweep_ok:
+                    # Scan for a counter-trend Bearish FVG (l[k-2] > h[k]) formed during the sweep
+                    for k in range(max(2, sweep_idx), n1):
+                        if l1[k - 2] > h1[k]:
+                            fvg_low = h1[k]
+                            fvg_high = l1[k - 2]
+                            fvg_span = fvg_high - fvg_low
+                            if fvg_span >= min_gap_pts:
+                                # Inversion breakout: closed cleanly above fvg_high with bullish candle
+                                if curr_c > fvg_high and curr_c >= (o1[-1] if len(o1) >= n1 else curr_c):
+                                    recent_low = float(min(l1[max(0, sweep_idx - 1):n1]))
+                                    structural_sl = recent_low - atr_pad
+                                    # Institutional Mitigation Entry Level: the inverted FVG resistance-turned-support
+                                    entry_price = fvg_high
+                                    risk = entry_price - structural_sl
+                                    effective_min_sl = min_sl_distance
+                                    if curr_c > 1000:
+                                        effective_min_sl = max(effective_min_sl, m1_atr * 2.0 if m1_atr > 0 else 5.0)
+                                    if effective_min_sl > 0 and risk < effective_min_sl:
+                                        risk = effective_min_sl
+                                        structural_sl = entry_price - risk
+                                    if risk > 0:
+                                        tp = entry_price + (risk * target_r)
+                                        return {
+                                            "direction": TradeDirection.BUY,
+                                            "bsl": bsl,
+                                            "ssl": ssl,
+                                            "swept_level": fvg_high,
+                                            "sweep_direction": "SWEEP_INVERSION_FVG_BREAKOUT",
+                                            "sweep_low": recent_low,
+                                            "mss_level": fvg_high,
+                                            "fvg_low": fvg_low,
+                                            "fvg_high": fvg_high,
+                                            "entry_price": round(entry_price, digits),
+                                            "sl_price": round(structural_sl, digits),
+                                            "tp_price": round(tp, digits),
+                                            "risk_distance": round(risk, digits),
+                                            "target_r": target_r,
+                                            "atr": round(m1_atr, 4 if digits == 2 else 6),
+                                            "is_chop": is_chop,
+                                            "setup_type": "SWEEP_INVERSION_FVG_ANTI_TRAP",
+                                            "anti_trap_inversion": True,
+                                        }
 
         return None
 
