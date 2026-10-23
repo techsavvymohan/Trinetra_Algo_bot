@@ -1,4 +1,5 @@
 import logging
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -12,6 +13,7 @@ class AccountManager:
     def __init__(self, connector):
         self.connector = connector
         self._last_info: Optional[AccountInfo] = None
+        self._last_refresh_time: float = 0.0
         self._symbol_cache: dict = {}
         self._tick_cache: dict = {}
 
@@ -28,7 +30,10 @@ class AccountManager:
             self._tick_cache[symbol] = tick
         return self._tick_cache.get(symbol)
 
-    def refresh(self) -> Optional[AccountInfo]:
+    def refresh(self, force: bool = False) -> Optional[AccountInfo]:
+        now = time.time()
+        if not force and self._last_info is not None and (now - self._last_refresh_time < 0.50):
+            return self._last_info
         if not self.connector.ensure_connected():
             return None
         info = self.connector.account_info()
@@ -49,6 +54,7 @@ class AccountManager:
             currency=info.currency,
             server_time=datetime.fromtimestamp(tick.time) if tick else None,
         )
+        self._last_refresh_time = now
         return self._last_info
 
     @property

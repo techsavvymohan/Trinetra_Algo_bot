@@ -89,24 +89,36 @@ class MT5Connector:
             return self._connected and mt5 is not None and mt5.terminal_info() is not None
 
     def reconnect(self, max_retries: int = 3, delay: float = 2.0) -> bool:
-        self.disconnect()
-        for attempt in range(1, max_retries + 1):
-            log.info("Reconnect attempt %d/%d", attempt, max_retries)
-            if self.connect():
+        with self._lock:
+            # If another thread already completed reconnection while waiting on the lock:
+            if self._connected and mt5 is not None and mt5.terminal_info() is not None:
+                log.info("MT5 already connected or reconnected by peer thread")
                 return True
-            if attempt < max_retries:
-                time.sleep(delay)
-        return False
+            self.disconnect()
+            for attempt in range(1, max_retries + 1):
+                log.info("Reconnect attempt %d/%d", attempt, max_retries)
+                if self.connect():
+                    return True
+                if attempt < max_retries:
+                    time.sleep(delay)
+            return False
 
     def ensure_connected(self) -> bool:
         if self.is_connected:
             self._reconnect_attempts = 0
             return True
-        delay = min(2.0 * (2 ** self._reconnect_attempts), 60.0)
-        self._reconnect_attempts += 1
-        log.warning("Reconnecting (attempt %d, delay=%.1fs)", self._reconnect_attempts, delay)
-        time.sleep(delay)
-        return self.reconnect()
+        with self._lock:
+            if self.is_connected:
+                self._reconnect_attempts = 0
+                return True
+            delay = min(2.0 * (2 ** self._reconnect_attempts), 60.0)
+            self._reconnect_attempts += 1
+            log.warning("Reconnecting (attempt %d, delay=%.1fs)", self._reconnect_attempts, delay)
+            time.sleep(delay)
+            ok = self.reconnect()
+            if ok:
+                self._reconnect_attempts = 0
+            return ok
 
     def symbol_info(self, symbol: str = "XAUUSD"):
         with self._lock:
