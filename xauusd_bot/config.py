@@ -173,6 +173,14 @@ class TradingConfig:
     xau_retest_max_bars: int = 8  # Maximum M1 bars to wait for confirmed retest
     xau_strict_killzones: bool = True  # London (07-09 UTC) & NY Core (13:30-16:30 UTC)
     xau_session_cutoff_hour: int = 24  # Cutoff hour (UTC) for XAU signals (24 = disabled / Full-Day Flagship; 13 = London only)
+
+    # Secret Agent: Daily VWAP Auction Co-Engine (Independent Concurrent Execution)
+    enable_vwap_auction_agent: bool = True
+    vwap_agent_risk_pct: float = 0.0085
+    vwap_agent_target_rr: float = 2.20
+    vwap_agent_min_sl_distance: float = 5.0
+    vwap_agent_swing_lookback_m15: int = 16
+
     xau_target_r: float = 1.40
     xau_risk_per_trade: float = 0.0085
     xau_max_trades_per_session: int = 2  # Option A: 2 trades per session

@@ -775,6 +775,7 @@ class XAUUSDBot:
                     cluster_mgr=self.cluster_mgr,
                     persistence=self.persistence,
                 )
+                self.coordinator.register_engine(engine)
             else:
                 engine = XauusdEngine(
                     symbol=sym,
@@ -790,7 +791,26 @@ class XAUUSDBot:
                     cluster_mgr=self.cluster_mgr,
                     persistence=self.persistence,
                 )
-            self.coordinator.register_engine(engine)
+                self.coordinator.register_engine(engine)
+
+                # Secret Agent: Daily VWAP Auction Co-Engine (Independent Concurrent Execution)
+                if getattr(tc, "enable_vwap_auction_agent", True):
+                    from .engines.vwap_auction_agent import VwapAuctionAgent
+                    vwap_agent = VwapAuctionAgent(
+                        symbol=sym,
+                        config=self.cfg,
+                        connector=self.connector,
+                        account=self.account,
+                        data_feed=feed,
+                        spread_tracker=spread_tr,
+                        spread_filter=spread_flt,
+                        news_filter=self.news_filter,
+                        trigger=self.trigger,
+                        trade_mgr=self.trade_mgr,
+                        cluster_mgr=self.cluster_mgr,
+                        persistence=self.persistence,
+                    )
+                    self.coordinator.register_engine(vwap_agent)
 
     def _reconcile_broker_positions(self):
         """Reconcile active MT5 positions and pending orders into cluster manager on startup/restart."""

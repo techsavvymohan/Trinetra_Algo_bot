@@ -6,7 +6,7 @@ import pytest
 
 from xauusd_bot.config import Config
 from xauusd_bot.engines import (
-    BaseSymbolEngine, XauusdEngine, Nas100Engine, MultiEngineCoordinator,
+    BaseSymbolEngine, XauusdEngine, Nas100Engine, VwapAuctionAgent, MultiEngineCoordinator,
 )
 from xauusd_bot.models import (
     AccountInfo, ExitReason, PyraCluster, Signal, SignalGrade,
@@ -373,4 +373,343 @@ def test_nas_ny_open_blackout_and_symbol_cooldown(base_components):
     assert elapsed_nas >= nas_cd
     # Gold cooldown should still be active (16 < 60)
     assert elapsed_gold < gold_cd
+
+
+def test_vwap_auction_agent_sessions_and_guards(base_components):
+    """Verify VwapAuctionAgent initialization, session active logic, and Daily VWAP calculation."""
+    c = base_components
+    agent = VwapAuctionAgent(
+        symbol="XAUUSD",
+        config=c["cfg"],
+        connector=c["connector"],
+        account=c["account"],
+        data_feed=c["data_feed"],
+        spread_tracker=c["spread_tracker"],
+        spread_filter=c["spread_filter"],
+        news_filter=c["news_filter"],
+        trigger=c["trigger"],
+        trade_mgr=c["trade_mgr"],
+        cluster_mgr=c["cluster_mgr"],
+        persistence=c["persistence"],
+    )
+
+    assert agent.engine_id == "XAUUSD_VWAP_SECRET_AGENT"
+    assert agent.asset_name == "Gold VWAP Auction Secret Agent (XAUUSD)"
+    assert agent.get_risk_per_trade() == 0.0085
+    assert agent.get_min_sl_distance(2700.0, 1.0) == 5.0
+
+    # 1. Test Session Active logic
+    # London Killzone (08:30 UTC -> True)
+    dt_london = datetime(2026, 10, 23, 8, 30, tzinfo=timezone.utc)
+    assert agent.is_session_active(dt_london) is True
+
+    # NY Core Session (14:30 UTC -> True)
+    dt_ny = datetime(2026, 10, 23, 14, 30, tzinfo=timezone.utc)
+    assert agent.is_session_active(dt_ny) is True
+
+    # Asian dead hours (04:00 UTC -> False)
+    dt_asian = datetime(2026, 10, 23, 4, 0, tzinfo=timezone.utc)
+    assert agent.is_session_active(dt_asian) is False
+
+    # 2. Test Consecutive Loss Guard
+    assert agent.consec_losses == 0
+    agent.on_position_closed(-50.0, dt_london, ExitReason.STOP_LOSS)
+    assert agent.consec_losses == 1
+    assert agent.london_paused_today is True
+
+    agent.on_position_closed(-50.0, dt_london, ExitReason.STOP_LOSS)
+    assert agent.consec_losses == 2
+    assert agent.paused_today is True
+    assert agent.check_symbol_guards(dt_london, {}, 2700.0) is False
+
+    # Win resets consec_losses
+    agent.on_position_closed(100.0, dt_london, ExitReason.TAKE_PROFIT)
+    assert agent.consec_losses == 0
+
+    # 3. Test True Daily Rolling VWAP calculation (only includes today's bars)
+    today_dt = datetime(2026, 10, 23, 12, 0, tzinfo=timezone.utc)
+    # Yesterday 23:59 UTC timestamp
+    t_yesterday = int(datetime(2026, 10, 22, 23, 59, tzinfo=timezone.utc).timestamp())
+    # Today 00:01 and 00:02 UTC timestamps
+    t_today1 = int(datetime(2026, 10, 23, 0, 1, tzinfo=timezone.utc).timestamp())
+    t_today2 = int(datetime(2026, 10, 23, 0, 2, tzinfo=timezone.utc).timestamp())
+
+    m1_sample = TimeframeData(
+        tf="M1",
+        time=[t_yesterday, t_today1, t_today2],
+        open=[2600.0, 2700.0, 2710.0],
+        high=[2605.0, 2705.0, 2715.0],
+        low=[2595.0, 2695.0, 2705.0],
+        close=[2600.0, 2700.0, 2710.0],
+        tick_volume=[1000, 100, 100],  # Yesterday's huge volume should be excluded!
+        spread=[10, 10, 10],
+    )
+    # Today bar 1 typical = (2705 + 2695 + 2700)/3 = 2700.0, vol = 100 -> pv = 270,000
+    # Today bar 2 typical = (2715 + 2705 + 2710)/3 = 2710.0, vol = 100 -> pv = 271,000
+    # Expected VWAP = (270,000 + 271,000) / 200 = 541,000 / 200 = 2705.0
+    calc_vwap = agent.calculate_daily_vwap(m1_sample, today_dt)
+    assert round(calc_vwap, 2) == 2705.0
+
+
+def test_vwap_auction_agent_discount_buy_trigger(base_components):
+    """Verify VWAP agent detects BUY in Discount Auction (price < VWAP) after SSL sweep & MSS."""
+    c = base_components
+    agent = VwapAuctionAgent(
+        symbol="XAUUSD",
+        config=c["cfg"],
+        connector=c["connector"],
+        account=c["account"],
+        data_feed=c["data_feed"],
+        spread_tracker=c["spread_tracker"],
+        spread_filter=c["spread_filter"],
+        news_filter=c["news_filter"],
+        trigger=c["trigger"],
+        trade_mgr=c["trade_mgr"],
+        cluster_mgr=c["cluster_mgr"],
+        persistence=c["persistence"],
+    )
+
+    now_utc = datetime(2026, 10, 23, 14, 0, tzinfo=timezone.utc)
+    base_t = int(now_utc.timestamp())
+
+    # Build M15 data with SSL at 2690.0 at closed bar index -5
+    m15_highs = [2710.0] * 20
+    m15_lows = [2695.0] * 14 + [2690.0] + [2695.0] * 5  # SSL = 2690.0 inside closed bars
+    m15_data = TimeframeData(
+        tf="M15",
+        time=[base_t - (20 - i) * 900 for i in range(20)],
+        open=[2700.0] * 20,
+        high=m15_highs,
+        low=m15_lows,
+        close=[2700.0] * 20,
+        tick_volume=[500] * 20,
+        spread=[10] * 20,
+    )
+
+    # Build M1 data where:
+    # 1. Prior bars establish VWAP at ~2705.0 (so price 2693 is in DISCOUNT)
+    # 2. Bar at -3, -2 sweeps SSL (low = 2688.0 < 2690.0)
+    # 3. Bar at -1 closes strongly above SSL with MSS breakout (open=2690.0, close=2693.0, high=2693.5, low=2689.5)
+    # Range of bars ~2.0 so m1_atr ~ 2.0
+    m1_times = [base_t - (20 - i) * 60 for i in range(20)]
+    m1_opens = [2705.0] * 15 + [2692.0, 2691.0, 2689.0, 2689.0, 2690.0]
+    m1_highs = [2706.0] * 15 + [2692.5, 2691.5, 2690.0, 2690.0, 2693.5]
+    m1_lows = [2704.0] * 15 + [2690.5, 2689.5, 2688.0, 2688.5, 2689.5]  # swept 2690 at -3, -2
+    m1_closes = [2705.0] * 15 + [2691.0, 2690.0, 2688.5, 2689.5, 2693.0]
+    m1_vols = [100] * 20
+
+    m1_data = TimeframeData(
+        tf="M1",
+        time=m1_times,
+        open=m1_opens,
+        high=m1_highs,
+        low=m1_lows,
+        close=m1_closes,
+        tick_volume=m1_vols,
+        spread=[10] * 20,
+    )
+
+    fake_cluster = PyraCluster(
+        symbol="XAUUSD",
+        direction=TradeDirection.BUY,
+        collective_sl=2685.0,
+        target_tp=2705.0,
+    )
+    c["trade_mgr"].create_pending_retest_cluster.return_value = fake_cluster
+
+    data_all = {"M15": m15_data, "M1": m1_data}
+    account_info = AccountInfo(balance=10000.0, equity=10000.0)
+
+    agent.evaluate_and_trigger(
+        now_utc=now_utc,
+        ny_dt=datetime(2026, 10, 23, 10, 0),
+        data_all=data_all,
+        m1_data=m1_data,
+        current_price=2693.0,
+        pending_clusters=[],
+        account_info=account_info,
+    )
+
+    # Verify cluster was created and tagged as VWAP_AUCTION
+    c["trade_mgr"].create_pending_retest_cluster.assert_called_once()
+    assert fake_cluster.strategy == "VWAP_AUCTION"
+    assert fake_cluster.engine_id == "XAUUSD_VWAP_SECRET_AGENT"
+    assert len(c["cluster_mgr"].active) == 1
+    assert c["cluster_mgr"].active[0].strategy == "VWAP_AUCTION"
+
+
+def test_vwap_auction_agent_premium_sell_trigger(base_components):
+    """Verify VWAP agent detects SELL in Premium Auction (price > VWAP) after BSL sweep & MSS."""
+    c = base_components
+    agent = VwapAuctionAgent(
+        symbol="XAUUSD",
+        config=c["cfg"],
+        connector=c["connector"],
+        account=c["account"],
+        data_feed=c["data_feed"],
+        spread_tracker=c["spread_tracker"],
+        spread_filter=c["spread_filter"],
+        news_filter=c["news_filter"],
+        trigger=c["trigger"],
+        trade_mgr=c["trade_mgr"],
+        cluster_mgr=c["cluster_mgr"],
+        persistence=c["persistence"],
+    )
+
+    now_utc = datetime(2026, 10, 23, 14, 0, tzinfo=timezone.utc)
+    base_t = int(now_utc.timestamp())
+
+    # Build M15 data with BSL at 2710.0 at closed bar index -5
+    m15_highs = [2700.0] * 14 + [2710.0] + [2700.0] * 5  # BSL = 2710.0 inside closed bars
+    m15_lows = [2685.0] * 20
+    m15_data = TimeframeData(
+        tf="M15",
+        time=[base_t - (20 - i) * 900 for i in range(20)],
+        open=[2690.0] * 20,
+        high=m15_highs,
+        low=m15_lows,
+        close=[2690.0] * 20,
+        tick_volume=[500] * 20,
+        spread=[10] * 20,
+    )
+
+    # Build M1 data where:
+    # 1. Prior bars establish VWAP at ~2695.0 (so price 2707 is in PREMIUM)
+    # 2. Price sweeps BSL (high = 2711.5 > 2710.0)
+    # 3. Bar at -1 closes strongly down below BSL with MSS breakdown (open=2710.0, close=2707.0, high=2710.5, low=2706.5)
+    # Range of bars ~2.0 so m1_atr ~ 2.0
+    m1_times = [base_t - (20 - i) * 60 for i in range(20)]
+    m1_opens = [2699.0] * 15 + [2707.5, 2708.0, 2710.0, 2710.0, 2709.5]
+    m1_highs = [2700.0] * 15 + [2709.0, 2710.0, 2711.5, 2710.5, 2710.0]  # swept 2710 at -3
+    m1_lows = [2698.0] * 15 + [2707.5, 2708.0, 2709.0, 2708.5, 2705.5]
+    m1_closes = [2699.0] * 15 + [2708.5, 2709.5, 2710.5, 2709.0, 2706.0]
+    m1_vols = [100] * 20
+
+    m1_data = TimeframeData(
+        tf="M1",
+        time=m1_times,
+        open=m1_opens,
+        high=m1_highs,
+        low=m1_lows,
+        close=m1_closes,
+        tick_volume=m1_vols,
+        spread=[10] * 20,
+    )
+
+    fake_cluster = PyraCluster(
+        symbol="XAUUSD",
+        direction=TradeDirection.SELL,
+        collective_sl=2715.0,
+        target_tp=2690.0,
+    )
+    c["trade_mgr"].create_pending_retest_cluster.return_value = fake_cluster
+
+    data_all = {"M15": m15_data, "M1": m1_data}
+    account_info = AccountInfo(balance=10000.0, equity=10000.0)
+
+    agent.evaluate_and_trigger(
+        now_utc=now_utc,
+        ny_dt=datetime(2026, 10, 23, 10, 0),
+        data_all=data_all,
+        m1_data=m1_data,
+        current_price=2706.0,
+        pending_clusters=[],
+        account_info=account_info,
+    )
+
+    # Verify cluster was created for SELL and tagged
+    c["trade_mgr"].create_pending_retest_cluster.assert_called_once()
+    assert fake_cluster.strategy == "VWAP_AUCTION"
+    assert fake_cluster.direction == TradeDirection.SELL
+    assert fake_cluster.engine_id == "XAUUSD_VWAP_SECRET_AGENT"
+
+
+def test_coordinator_triple_engine_threaded_coexistence(base_components):
+    """Verify coordinator hosts XauusdEngine, VwapAuctionAgent, and Nas100Engine simultaneously."""
+    c = base_components
+    coordinator = MultiEngineCoordinator(
+        config=c["cfg"],
+        connector=c["connector"],
+        account=c["account"],
+        daily_loss=c["daily_loss"],
+        max_dd=c["max_dd"],
+        sizer=c["sizer"],
+        trade_mgr=c["trade_mgr"],
+        cluster_mgr=c["cluster_mgr"],
+        news_filter=c["news_filter"],
+        persistence=c["persistence"],
+    )
+
+    primary_gold = XauusdEngine(
+        symbol="XAUUSD",
+        config=c["cfg"],
+        connector=c["connector"],
+        account=c["account"],
+        data_feed=c["data_feed"],
+        spread_tracker=c["spread_tracker"],
+        spread_filter=c["spread_filter"],
+        news_filter=c["news_filter"],
+        trigger=c["trigger"],
+        trade_mgr=c["trade_mgr"],
+        cluster_mgr=c["cluster_mgr"],
+        persistence=c["persistence"],
+    )
+
+    secret_agent_gold = VwapAuctionAgent(
+        symbol="XAUUSD",
+        config=c["cfg"],
+        connector=c["connector"],
+        account=c["account"],
+        data_feed=c["data_feed"],
+        spread_tracker=c["spread_tracker"],
+        spread_filter=c["spread_filter"],
+        news_filter=c["news_filter"],
+        trigger=c["trigger"],
+        trade_mgr=c["trade_mgr"],
+        cluster_mgr=c["cluster_mgr"],
+        persistence=c["persistence"],
+    )
+
+    nas_engine = Nas100Engine(
+        symbol="USTECH100M",
+        config=c["cfg"],
+        connector=c["connector"],
+        account=c["account"],
+        data_feed=c["data_feed"],
+        spread_tracker=c["spread_tracker"],
+        spread_filter=c["spread_filter"],
+        news_filter=c["news_filter"],
+        trigger=c["trigger"],
+        trade_mgr=c["trade_mgr"],
+        cluster_mgr=c["cluster_mgr"],
+        persistence=c["persistence"],
+    )
+
+    coordinator.register_engine(primary_gold)
+    coordinator.register_engine(secret_agent_gold)
+    coordinator.register_engine(nas_engine)
+
+    # Verify all 3 are stored under distinct keys
+    assert "XAUUSD" in coordinator.engines
+    assert "XAUUSD_VWAP_SECRET_AGENT" in coordinator.engines
+    assert "USTECH100M" in coordinator.engines
+    assert len(coordinator.engines) == 3
+
+    assert coordinator.get_engine("XAUUSD") is primary_gold
+    assert coordinator.get_engine("XAUUSD_VWAP_SECRET_AGENT") is secret_agent_gold
+    assert coordinator.get_engine("USTECH100M") is nas_engine
+
+    # Mock engine worker loop to run briefly and stop
+    with patch.object(coordinator, "_engine_worker_loop", side_effect=lambda eng: time.sleep(0.05)):
+        t_coord = threading.Thread(target=coordinator.start, kwargs={"mode": "threaded"}, daemon=True)
+        t_coord.start()
+
+        time.sleep(0.1)
+        assert coordinator.running is True
+        assert len(coordinator.worker_threads) == 3
+
+        coordinator.stop()
+        t_coord.join(timeout=2.0)
+        assert coordinator.running is False
+
 

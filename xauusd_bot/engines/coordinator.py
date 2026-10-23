@@ -58,13 +58,19 @@ class MultiEngineCoordinator:
         self._active_account_login: Optional[int] = None
         self._capital_calibrated: bool = False
 
-    def register_engine(self, engine: BaseSymbolEngine):
-        """Register a symbol engine under its traded symbol."""
-        self.engines[engine.symbol] = engine
-        log.info("Registered engine [%s] for symbol '%s'", engine.asset_name, engine.symbol)
+    def register_engine(self, engine: BaseSymbolEngine, key: Optional[str] = None):
+        """Register a symbol engine under its traded symbol or unique engine key."""
+        engine_key = key or getattr(engine, "engine_id", engine.symbol)
+        self.engines[engine_key] = engine
+        log.info("Registered engine [%s] under key '%s' for symbol '%s'", engine.asset_name, engine_key, engine.symbol)
 
-    def get_engine(self, symbol: str) -> Optional[BaseSymbolEngine]:
-        return self.engines.get(symbol)
+    def get_engine(self, key_or_symbol: str) -> Optional[BaseSymbolEngine]:
+        if key_or_symbol in self.engines:
+            return self.engines[key_or_symbol]
+        for eng in self.engines.values():
+            if eng.symbol == key_or_symbol:
+                return eng
+        return None
 
     def close_all_positions(self, reason: str):
         """Emergency liquidation across all open clusters across all symbols."""
@@ -78,9 +84,9 @@ class MultiEngineCoordinator:
 
     def _engine_worker_loop(self, engine: BaseSymbolEngine):
         """Dedicated execution loop running in a background worker thread for a single engine."""
-        sym = engine.symbol
+        thread_tag = getattr(engine, "engine_id", engine.symbol)
         poll_s = self.cfg.trading.poll_interval_ms / 1000.0
-        log.info("🧵 [Thread-%s] Worker thread started for %s", sym, engine.asset_name)
+        log.info("🧵 [Thread-%s] Worker thread started for %s", thread_tag, engine.asset_name)
 
         while self.running and engine.running:
             try:
@@ -99,10 +105,10 @@ class MultiEngineCoordinator:
                 time.sleep(poll_s)
 
             except Exception as e:
-                log.exception("Unhandled error in worker thread [%s]: %s", sym, e)
+                log.exception("Unhandled error in worker thread [%s]: %s", thread_tag, e)
                 time.sleep(poll_s * 2)
 
-        log.info("🧵 [Thread-%s] Worker thread terminated", sym)
+        log.info("🧵 [Thread-%s] Worker thread terminated", thread_tag)
 
     def start(self, mode: str = "threaded"):
         """Start the multi-engine coordinator in threaded (concurrent) or sequential mode."""
@@ -114,15 +120,14 @@ class MultiEngineCoordinator:
             return
 
         # Auto-resolve broker symbols and subscribe in Market Watch
-        for sym in list(self.engines.keys()):
-            resolved = self.connector.resolve_broker_symbol(sym)
-            if resolved != sym:
-                engine = self.engines.pop(sym)
+        for key in list(self.engines.keys()):
+            engine = self.engines[key]
+            resolved = self.connector.resolve_broker_symbol(engine.symbol)
+            if resolved != engine.symbol:
                 engine.symbol = resolved
                 if hasattr(engine, "data_feed") and engine.data_feed:
                     engine.data_feed.symbol = resolved
-                self.engines[resolved] = engine
-                log.info("🎯 Auto-Resolved Engine Symbol: '%s' -> '%s'", sym, resolved)
+                log.info("🎯 Auto-Resolved Engine Symbol for [%s]: '%s'", key, resolved)
             self.connector.symbol_select(resolved, True)
 
         # Initial account calibration from live MT5 broker deals
