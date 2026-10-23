@@ -394,7 +394,7 @@ def test_vwap_auction_agent_sessions_and_guards(base_components):
     )
 
     assert agent.engine_id == "XAUUSD_VWAP_SECRET_AGENT"
-    assert agent.asset_name == "Gold VWAP Auction Secret Agent (XAUUSD)"
+    assert "Gold VWAP Auction Secret Agent (XAUUSD)" in agent.asset_name
     assert agent.get_risk_per_trade() == 0.0085
     assert agent.get_min_sl_distance(2700.0, 1.0) == 5.0
 
@@ -509,6 +509,7 @@ def test_vwap_auction_agent_discount_buy_trigger(base_components):
         spread=[10] * 20,
     )
 
+    c["cfg"].trading.vwap_agent_paper_mode = False
     fake_cluster = PyraCluster(
         symbol="XAUUSD",
         direction=TradeDirection.BUY,
@@ -541,6 +542,7 @@ def test_vwap_auction_agent_discount_buy_trigger(base_components):
 def test_vwap_auction_agent_premium_sell_trigger(base_components):
     """Verify VWAP agent detects SELL in Premium Auction (price > VWAP) after BSL sweep & MSS."""
     c = base_components
+    c["cfg"].trading.vwap_agent_paper_mode = False
     agent = VwapAuctionAgent(
         symbol="XAUUSD",
         config=c["cfg"],
@@ -622,6 +624,110 @@ def test_vwap_auction_agent_premium_sell_trigger(base_components):
     assert fake_cluster.strategy == "VWAP_AUCTION"
     assert fake_cluster.direction == TradeDirection.SELL
     assert fake_cluster.engine_id == "XAUUSD_VWAP_SECRET_AGENT"
+
+
+def test_vwap_auction_agent_paper_mode_flow(base_components, tmp_path):
+    """Verify Option 2: Paper Mode creates virtual trades, updates BE, and exits with ZERO real MT5 risk."""
+    c = base_components
+    c["cfg"].trading.vwap_agent_paper_mode = True
+    agent = VwapAuctionAgent(
+        symbol="XAUUSD",
+        config=c["cfg"],
+        connector=c["connector"],
+        account=c["account"],
+        data_feed=c["data_feed"],
+        spread_tracker=c["spread_tracker"],
+        spread_filter=c["spread_filter"],
+        news_filter=c["news_filter"],
+        trigger=c["trigger"],
+        trade_mgr=c["trade_mgr"],
+        cluster_mgr=c["cluster_mgr"],
+        persistence=c["persistence"],
+    )
+    agent.paper_journal_path = str(tmp_path / "paper_journal.jsonl")
+
+    assert agent.is_paper_mode is True
+    assert "PAPER" in agent.asset_name
+
+    now_utc = datetime(2026, 10, 23, 14, 0, tzinfo=timezone.utc)
+    base_t = int(now_utc.timestamp())
+
+    m15_highs = [2710.0] * 20
+    m15_lows = [2695.0] * 14 + [2690.0] + [2695.0] * 5
+    m15_data = TimeframeData(
+        tf="M15",
+        time=[base_t - (20 - i) * 900 for i in range(20)],
+        open=[2700.0] * 20,
+        high=m15_highs,
+        low=m15_lows,
+        close=[2700.0] * 20,
+        tick_volume=[500] * 20,
+        spread=[10] * 20,
+    )
+
+    m1_times = [base_t - (20 - i) * 60 for i in range(20)]
+    m1_opens = [2705.0] * 15 + [2692.0, 2691.0, 2689.0, 2689.0, 2690.0]
+    m1_highs = [2706.0] * 15 + [2692.5, 2691.5, 2690.0, 2690.0, 2693.5]
+    m1_lows = [2704.0] * 15 + [2690.5, 2689.5, 2688.0, 2688.5, 2689.5]
+    m1_closes = [2705.0] * 15 + [2691.0, 2690.0, 2688.5, 2689.5, 2693.0]
+    m1_vols = [100] * 20
+
+    m1_data = TimeframeData(
+        tf="M1",
+        time=m1_times,
+        open=m1_opens,
+        high=m1_highs,
+        low=m1_lows,
+        close=m1_closes,
+        tick_volume=m1_vols,
+        spread=[10] * 20,
+    )
+
+    data_all = {"M15": m15_data, "M1": m1_data}
+    account_info = AccountInfo(balance=10000.0, equity=10000.0)
+
+    # Trigger evaluation in Paper Mode
+    agent.evaluate_and_trigger(
+        now_utc=now_utc,
+        ny_dt=datetime(2026, 10, 23, 10, 0),
+        data_all=data_all,
+        m1_data=m1_data,
+        current_price=2693.0,
+        pending_clusters=[],
+        account_info=account_info,
+    )
+
+    # 1. trade_mgr.create_pending_retest_cluster MUST NOT be called!
+    c["trade_mgr"].create_pending_retest_cluster.assert_not_called()
+
+    # 2. Virtual paper trade must be open in agent.paper_trades
+    assert len(agent.paper_trades) == 1
+    pt = agent.paper_trades[0]
+    assert pt["direction"] == "BUY"
+    assert pt["entry_price"] == 2693.0
+    assert pt["risk_dist"] > 0
+    assert pt["be_moved"] is False
+
+    # 3. Simulate price rising to +1.0R -> Breakeven ratchet
+    r_dist = pt["risk_dist"]
+    mock_tick_be = MagicMock()
+    mock_tick_be.bid = 2693.0 + r_dist + 0.5
+    mock_tick_be.ask = mock_tick_be.bid + 0.40
+    c["connector"].symbol_info_tick.return_value = mock_tick_be
+
+    agent._update_paper_trades()
+    assert pt["be_moved"] is True
+    assert pt["sl_price"] > 2693.0  # SL protected above entry
+
+    # 4. Simulate price hitting TP
+    mock_tick_tp = MagicMock()
+    mock_tick_tp.bid = pt["tp_price"] + 0.10
+    mock_tick_tp.ask = mock_tick_tp.bid + 0.40
+    c["connector"].symbol_info_tick.return_value = mock_tick_tp
+
+    agent._update_paper_trades()
+    # Paper trade should now be closed!
+    assert len(agent.paper_trades) == 0
 
 
 def test_coordinator_triple_engine_threaded_coexistence(base_components):

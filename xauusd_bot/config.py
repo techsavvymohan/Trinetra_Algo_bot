@@ -176,6 +176,7 @@ class TradingConfig:
 
     # Secret Agent: Daily VWAP Auction Co-Engine (Independent Concurrent Execution)
     enable_vwap_auction_agent: bool = True
+    vwap_agent_paper_mode: bool = True  # Option 2: Paper / Dry-run forward testing (Zero real capital risk)
     vwap_agent_risk_pct: float = 0.0085
     vwap_agent_target_rr: float = 2.20
     vwap_agent_min_sl_distance: float = 5.0

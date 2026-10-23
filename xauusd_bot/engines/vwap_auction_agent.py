@@ -81,10 +81,97 @@ class VwapAuctionAgent(BaseSymbolEngine):
         self.london_paused_today: bool = False
         self.last_vwap_day: Optional[object] = None
         self.current_day_vwap: float = 0.0
+        self.paper_trades: List[Dict] = []
+        self.paper_journal_path: str = "logs/vwap_paper_journal.jsonl"
+
+    @property
+    def is_paper_mode(self) -> bool:
+        return getattr(self.cfg.trading, "vwap_agent_paper_mode", True)
 
     @property
     def asset_name(self) -> str:
-        return f"Gold VWAP Auction Secret Agent ({self.symbol})"
+        mode_str = " [PAPER / DRY-RUN]" if self.is_paper_mode else " [LIVE]"
+        return f"Gold VWAP Auction Secret Agent ({self.symbol}){mode_str}"
+
+    def step(self, account_info: AccountInfo, now_epoch: float) -> bool:
+        if self.is_paper_mode and self.paper_trades:
+            self._update_paper_trades()
+        return super().step(account_info, now_epoch)
+
+    def _update_paper_trades(self):
+        """Update and monitor active paper trades in real-time."""
+        tick = self.connector.symbol_info_tick(self.symbol)
+        if not tick:
+            return
+        curr_bid = getattr(tick, "bid", 0.0)
+        curr_ask = getattr(tick, "ask", 0.0)
+        curr_p = (curr_bid + curr_ask) / 2.0
+        now_dt = datetime.now(timezone.utc)
+
+        for pt in list(self.paper_trades):
+            direction = pt["direction"]
+            entry_p = pt["entry_price"]
+            sl_p = pt["sl_price"]
+            tp_p = pt["tp_price"]
+            risk_dist = pt["risk_dist"]
+
+            # Breakeven ratchet @ +1.0R
+            if not pt.get("be_moved", False):
+                if direction == "BUY" and (curr_p - entry_p) >= (risk_dist * 1.0):
+                    pt["sl_price"] = entry_p + (risk_dist * 0.15)
+                    pt["be_moved"] = True
+                    log.info("[%s] 🛡️ [PAPER TRADE] Breakeven ratchet triggered for BUY! SL moved to %.2f", self.engine_id, pt["sl_price"])
+                elif direction == "SELL" and (entry_p - curr_p) >= (risk_dist * 1.0):
+                    pt["sl_price"] = entry_p - (risk_dist * 0.15)
+                    pt["be_moved"] = True
+                    log.info("[%s] 🛡️ [PAPER TRADE] Breakeven ratchet triggered for SELL! SL moved to %.2f", self.engine_id, pt["sl_price"])
+
+            outcome = None
+            exit_price = None
+            if direction == "BUY":
+                if curr_bid <= pt["sl_price"]:
+                    outcome = "BE" if pt.get("be_moved") else "SL"
+                    exit_price = pt["sl_price"]
+                elif curr_bid >= tp_p:
+                    outcome = "TP"
+                    exit_price = tp_p
+            else:
+                if curr_ask >= pt["sl_price"]:
+                    outcome = "BE" if pt.get("be_moved") else "SL"
+                    exit_price = pt["sl_price"]
+                elif curr_ask <= tp_p:
+                    outcome = "TP"
+                    exit_price = tp_p
+
+            if outcome:
+                spread = getattr(self.cfg.trading, "spread_limit_xau", 0.40)
+                raw_pts = (exit_price - entry_p) if direction == "BUY" else (entry_p - exit_price)
+                net_pts = raw_pts - (spread + 0.10)
+                lot = pt.get("lot", 0.01)
+                pnl_cash = net_pts * lot * 100.0 - (7.0 * lot)
+                r_mult = pnl_cash / (risk_dist * lot * 100.0) if risk_dist > 0 else 0.0
+
+                log.info("[%s] 📝 [PAPER TRADE RESULT] %s EXITED (%s)! Exit=%.2f | Net PnL: $%.2f (%+.2f R)",
+                         self.engine_id, direction, outcome, exit_price, pnl_cash, r_mult)
+
+                pt["exit_price"] = exit_price
+                pt["exit_time"] = now_dt.isoformat()
+                pt["outcome"] = outcome
+                pt["pnl_cash"] = round(pnl_cash, 2)
+                pt["r_multiple"] = round(r_mult, 2)
+                self._record_paper_journal(pt)
+
+                self.on_position_closed(pnl_cash, now_dt, ExitReason.TAKE_PROFIT if outcome == "TP" else ExitReason.STOP_LOSS)
+                self.paper_trades.remove(pt)
+
+    def _record_paper_journal(self, trade_data: Dict):
+        try:
+            import json, os
+            os.makedirs(os.path.dirname(self.paper_journal_path), exist_ok=True)
+            with open(self.paper_journal_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(trade_data) + "\n")
+        except Exception as e:
+            log.warning("Failed to record paper journal: %s", e)
 
     def is_session_active(self, now_utc: datetime) -> bool:
         tc = self.cfg.trading
@@ -303,6 +390,7 @@ class VwapAuctionAgent(BaseSymbolEngine):
                                 "entry_price": entry_p,
                                 "sl_price": sl_p,
                                 "tp_price": tp_p,
+                                "risk_dist": risk_dist,
                                 "swept_level": ssl,
                                 "sweep_type": "SSL_DISCOUNT_SWEEP",
                                 "fvg_low": sweep_low,
@@ -336,6 +424,7 @@ class VwapAuctionAgent(BaseSymbolEngine):
                                 "entry_price": entry_p,
                                 "sl_price": sl_p,
                                 "tp_price": tp_p,
+                                "risk_dist": risk_dist,
                                 "swept_level": bsl,
                                 "sweep_type": "BSL_PREMIUM_SWEEP",
                                 "fvg_low": entry_p,
@@ -343,11 +432,6 @@ class VwapAuctionAgent(BaseSymbolEngine):
                             }
 
         if not detected_setup:
-            return
-
-        # Prevent duplicate pending cluster in same direction for this agent
-        agent_pending = [pc for pc in pending_clusters if getattr(pc, "strategy", "") == "VWAP_AUCTION"]
-        if any(pc.direction == detected_setup["direction"] for pc in agent_pending):
             return
 
         h_utc = now_utc.hour
@@ -358,6 +442,49 @@ class VwapAuctionAgent(BaseSymbolEngine):
         log.info("[%s] 🕵️ VWAP AUCTION SECRET AGENT TRIGGERED (%s)! UTC: %s | VWAP: %.2f",
                  self.engine_id, sess_name, utc_str, daily_vwap)
         log.info(f"[{self.engine_id}] {detected_setup['direction'].value} Setup: Swept={detected_setup['sweep_type']} at {detected_setup['swept_level']:.2f} | Entry={detected_setup['entry_price']:.2f}, SL={detected_setup['sl_price']:.2f}, TP={detected_setup['tp_price']:.2f} (RR={target_r})")
+
+        # -----------------------------------------------------------------
+        # OPTION 2: PAPER / DRY-RUN FORWARD TESTING MODE (ZERO REAL CAPITAL RISK)
+        # -----------------------------------------------------------------
+        if self.is_paper_mode:
+            dir_str = detected_setup["direction"].value.upper()
+            if any(pt["direction"] == dir_str for pt in self.paper_trades):
+                return
+
+            lot = round((account_info.balance * self.get_risk_per_trade()) / (detected_setup["risk_dist"] * 100.0), 2)
+            lot = max(0.01, min(lot, 1.0))
+
+            paper_trade = {
+                "id": f"PAPER_{int(now_utc.timestamp())}",
+                "symbol": self.symbol,
+                "direction": dir_str,
+                "entry_price": detected_setup["entry_price"],
+                "sl_price": detected_setup["sl_price"],
+                "tp_price": detected_setup["tp_price"],
+                "risk_dist": detected_setup["risk_dist"],
+                "lot": lot,
+                "entry_time": now_utc.isoformat(),
+                "swept_level": detected_setup["swept_level"],
+                "sweep_type": detected_setup["sweep_type"],
+                "daily_vwap": round(daily_vwap, 2),
+                "target_r": target_r,
+                "be_moved": False,
+            }
+            self.paper_trades.append(paper_trade)
+            self.on_trade_opened(now_utc)
+            self._record_paper_journal(paper_trade)
+            log.info("[%s] 📝 [PAPER TRADE OPENED] %s at %.2f | SL=%.2f, TP=%.2f (RR=%.2f) | Lot=%.2f | ZERO REAL RISK",
+                     self.engine_id, paper_trade["direction"], paper_trade["entry_price"],
+                     paper_trade["sl_price"], paper_trade["tp_price"], target_r, lot)
+            return
+
+        # -----------------------------------------------------------------
+        # LIVE EXECUTION MODE (When paper mode is explicitly False)
+        # -----------------------------------------------------------------
+        # Prevent duplicate pending cluster in same direction for this agent
+        agent_pending = [pc for pc in pending_clusters if getattr(pc, "strategy", "") == "VWAP_AUCTION"]
+        if any(pc.direction == detected_setup["direction"] for pc in agent_pending):
+            return
 
         sig = Signal(
             symbol=self.symbol,
